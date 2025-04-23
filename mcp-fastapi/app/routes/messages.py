@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 import httpx
 from ..models import MCPMessage, AgentResponse
-from ..utils.graph import process_with_graph
+from ..utils.graph import AgentGraph
 
 router = APIRouter()
 
@@ -10,7 +10,8 @@ router = APIRouter()
 async def process_message(message: MCPMessage):
     """메시지 처리"""
     try:
-        result = await process_with_graph({
+        agent_graph = AgentGraph()
+        result = await agent_graph.process_with_graph({
             "input": message.prompt,
             "model": message.model,
             "parameters": message.parameters

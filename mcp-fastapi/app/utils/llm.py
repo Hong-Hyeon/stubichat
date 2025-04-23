@@ -1,7 +1,5 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
-import re
-import httpx
 from typing import Optional
 
 
@@ -16,9 +14,9 @@ class ExaOneLLM:
         self.model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
-            device_map="cpu",
+            device_map=self.device,
             trust_remote_code=True,
-            low_cpu_mem_usage=True,
+            # low_cpu_mem_usage=True,
         )
         self.model.eval()
         print(f"Model loaded on {self.device}")
@@ -36,12 +34,13 @@ class ExaOneLLM:
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
-                max_length=1024,
+                max_length=512,
                 temperature=0.3,
-                top_p=0.9,
-                do_sample=True
+                top_p=0.7,
+                do_sample=True,
+                # repetition_penalty=1.1,
+                # pad_token_id=self.tokenizer.eos_token_id
             )
-        
         return self.tokenizer.decode(outputs[0], skip_special_tokens=True)
 
 

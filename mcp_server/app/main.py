@@ -13,8 +13,9 @@ mcp = FastApiMCP(
     mcp_app,
     name="intellicode-mcp",
     description="Intellicode MCP Server",
-    base_url="http://localhost:8000",
-    include_operations=["file_read", "echo", "calc_sum", "reverse_text", "word_count"]
+    # LLM 서버 주소
+    base_url="http://localhost:8001",
+    include_operations=["file_read", "calc_sum", "reverse_text"]
 )
 # MCP 서버 마운트
 mcp.mount(mcp_app)
@@ -25,23 +26,20 @@ async def read_file(file_path: str) -> TextContent:
     try:
         path = Path(file_path)
         if not path.exists():
-            return TextContent(text=f"Error: File not found - {file_path}")
+            return TextContent(text=f"Error: File not found - {file_path}", type="text")
         
         if not path.is_file():
-            return TextContent(text=f"Error: Not a file - {file_path}")
+            return TextContent(text=f"Error: Not a file - {file_path}", type="text")
             
         content = path.read_text(encoding='utf-8')
-        return TextContent(text=content)
+        # 파일 내용을 문자열로 안전하게 처리
+        print("content", content)
+        result = f"The file content retrieved by file_read is:\n{str(content).replace('%', '%%')}"
+        return TextContent(text=result, type="text")
     except Exception as e:
-        return TextContent(text=f"Error reading file: {str(e)}")
+        return TextContent(text=f"Error reading file: {str(e)}", type="text")
 
 
-### 1. ECHO 도구
-@mcp_app.get("/echo", operation_id="echo")
-async def echo_message(message: str = Query(..., description="Echo할 메시지")) -> TextContent:
-    return TextContent(text=message)
-
-### 2. 합계 계산 도구
 @mcp_app.get("/calc_sum", operation_id="calc_sum")
 async def calc_sum(numbers: str = Query(..., description="Numbers to sum, separated by comma")) -> TextContent:
     """여러 숫자의 합을 계산"""
@@ -66,17 +64,10 @@ async def calc_sum(numbers: str = Query(..., description="Numbers to sum, separa
         print(e)
         raise HTTPException(status_code=400, detail=str(e))
 
-### 3. 텍스트 뒤집기
+
 @mcp_app.get("/reverse_text", operation_id="reverse_text")
 async def reverse_text(text: str = Query(...)) -> TextContent:
     reversed_text = text[::-1]
-    return TextContent(text=reversed_text)
-
-### 4. 단어 수 세기
-@mcp_app.get("/word_count", operation_id="word_count")
-async def word_count(text: str = Query(...)) -> TextContent:
-    count = len(text.split())
-    return TextContent(text=f"The text contains {count} words.")
-
+    return TextContent(text=reversed_text, type="text")
 
 mcp.setup_server()

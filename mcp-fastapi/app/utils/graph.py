@@ -11,72 +11,17 @@ import re
 
 from .mcp_tools import available_tools
 from .llm import get_llm
+from .utils import UtilsFunctions, AgentState
 
 
-# 상태 정의
-class AgentState(TypedDict):
-    messages: List[Union[HumanMessage, AIMessage]]
-    next: str
-    # 추가
-    loop_count: int
-
-
-def build_initial_state(user_input: str) -> AgentState:
-    """초기 상태 생성"""
-    return AgentState(
-        messages=[HumanMessage(content=user_input)],
-        next="llm",
-        # 추가
-        loop_count=0
-    )
-
-def extract_last_json_block(text: str) -> Optional[str]:
-    # LLM은 ```json``` 블럭 형태를 인식을 잘함. 프롬프트에 꼭 넣어주세요. 그냥 json으로 써달라고 하면 인식이 잘 안됨
-    try:
-        matches = re.findall(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
-        if matches:
-            return matches[-1]  # 마지막 JSON 블럭
-    except Exception as e:
-        print(f"JSON extract error: {e}")
-    return None
+utils_functions = UtilsFunctions()
 
 
 class ExaOneOutputParser:
     """ExaOne 출력을 파싱하는 클래스"""
-    
-    # def parse(self, text: str) -> Union[AgentAction, AgentFinish]:
-    #     """ExaOne 응답을 AgentAction 또는 AgentFinish로 파싱"""
-    #     try:
-    #         json_str = extract_last_json_block(text)
-    #         if json_str:
-    #             data = json.loads(json_str)
-
-    #             # 👇 이 부분 추가: 결과 설명이 포함돼 있으면 AgentFinish로 간주
-    #             if "name" in data and "arguments" in data:
-    #                 if "result" in text.lower() or "final" in text.lower():
-    #                     return AgentFinish(
-    #                         return_values={"output": text},
-    #                         log=text
-    #                     )
-    #                 return AgentAction(
-    #                     tool=data["name"],
-    #                     tool_input=data["arguments"],
-    #                     log=text
-    #                 )
-    #         return AgentFinish(
-    #             return_values={"output": text},
-    #             log=text
-    #         )
-    #     except Exception as e:
-    #         print(f"Parsing error: {e}")
-    #         print(f"Failed to parse text: {text}")
-    #         return AgentFinish(
-    #             return_values={"output": text},
-    #             log=text
-    #         )
     def parse(self, text: str) -> Union[AgentAction, AgentFinish]:
-        print("text : ",text)
-        json_str = extract_last_json_block(text)
+        json_str = utils_functions.extract_last_json_block(text)
+        print(json_str)
         if json_str:
             try:
                 data = json.loads(json_str)
@@ -114,8 +59,6 @@ def create_agent_graph():
             f"{tool.name}: {tool.description}" 
             for tool in available_tools
         ])
-#         formatted_messages.append(HumanMessage(content=f"""Tools: {tools_description}
-# Format: {{"name": "tool_name", "arguments": {{"arg1": "value1"}}}}"""))
         if not any("Tools:" in msg.content for msg in messages):
             formatted_messages.append(HumanMessage(content=f"""Tools: {tools_description}
             Format:
@@ -249,12 +192,21 @@ async def process_with_graph(input_data: Dict[str, str]) -> str:
     chain = create_agent_graph()
     
     # 초기 상태 생성
-    initial_state = build_initial_state(input_data["input"])
+    initial_state = utils_functions.build_initial_state(input_data["input"])
     
     # StateGraph에 상태 직접 전달
     result = await chain.ainvoke(initial_state)
-    print(result)
     
     # 최종 메시지 반환
     final_message = result["messages"][-1]
-    return final_message.content
+
+    message_content = final_message.content
+    
+    json_str = utils_functions.extract_last_json_block(message_content)
+    try:
+        json_data = json.loads(json_str)
+    except Exception as e:
+        print(f"JSON decode error: {e}")
+        return "I apologize, This is not a valid response."
+
+    return json_data.get('result', None)

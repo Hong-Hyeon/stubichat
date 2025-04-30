@@ -2,8 +2,11 @@ from fastapi import FastAPI, Query, HTTPException
 from fastapi_mcp import FastApiMCP
 from mcp.types import TextContent
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict
 import re
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
+# from app.config.base import DB_CONFIG
 
 ### MCP 서버 설정
 mcp_app = FastAPI(title="Intellicode MCP Server")
@@ -15,10 +18,15 @@ mcp = FastApiMCP(
     description="Intellicode MCP Server",
     # LLM 서버 주소
     base_url="http://localhost:8001",
-    include_operations=["file_read", "calc_sum", "reverse_text"]
+    include_operations=["file_read", "calc_sum", "reverse_text", "query_db"]
 )
 # MCP 서버 마운트
 mcp.mount(mcp_app)
+
+# DB 연결 문자열 생성
+# DB_URL = f"mysql+pymysql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}?charset={DB_CONFIG['charset']}"
+DB_URL = "mysql+pymysql://root:root@localhost:3306/mcp_db?charset=utf8"
+engine = create_engine(DB_URL)
 
 @mcp_app.get("/file_read", operation_id="file_read")
 async def read_file(file_path: str) -> TextContent:
@@ -33,8 +41,8 @@ async def read_file(file_path: str) -> TextContent:
             
         content = path.read_text(encoding='utf-8')
         # 파일 내용을 문자열로 안전하게 처리
-        print("content", content)
-        result = f"The file content retrieved by file_read is:\n{str(content).replace('%', '%%')}"
+        result = f"This is the content from the file '{file_path}':\n{str(content).replace('%', '%%')}"
+
         return TextContent(text=result, type="text")
     except Exception as e:
         return TextContent(text=f"Error reading file: {str(e)}", type="text")
@@ -65,9 +73,26 @@ async def calc_sum(numbers: str = Query(..., description="Numbers to sum, separa
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@mcp_app.get("/reverse_text", operation_id="reverse_text")
-async def reverse_text(text: str = Query(...)) -> TextContent:
-    reversed_text = text[::-1]
-    return TextContent(text=reversed_text, type="text")
+@mcp_app.get("/query_db", operation_id="query_db")
+async def query_db(sql_query: str = Query(...)) -> TextContent:
+    """데이터베이스 쿼리 실행"""
+    try:
+        with engine.connect() as connection:
+            # SQL 쿼리 실행
+            result = connection.execute(text(sql_query))
+            
+            # 결과를 딕셔너리 리스트로 변환
+            rows = [dict(row._mapping) for row in result]
+            
+            return TextContent(
+                text=str(rows),
+                type="text"
+            )
+            
+    except SQLAlchemyError as e:
+        return TextContent(text=f"Database error: {str(e)}", type="text")
+    except Exception as e:
+        return TextContent(text=f"Error: {str(e)}", type="text")
+
 
 mcp.setup_server()

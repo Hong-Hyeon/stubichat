@@ -30,25 +30,17 @@ def call_calc_sum(arguments: dict) -> str:
     except Exception as e:
         return f"Error: {str(e)}"
 
-def call_reverse_text(arguments: dict) -> str:
-    """텍스트를 뒤집는 도구"""
+def call_query_db(arguments: dict) -> str:
+    """데이터베이스 쿼리를 실행하는 도구"""
     try:
-        # 딕셔너리에서 텍스트 추출
-        text = ""
-        for key, value in sorted(arguments.items()):  # 정렬하여 순서 보장
-            if key.startswith('arg'):
-                text = str(value)
-                break
-        
-        if not text:
-            raise ValueError("Text is required")
+        sql_query = arguments.get('query', '')
+        if not sql_query:
+            return "Error: No SQL query provided"
             
-        res = httpx.get(f"{MCP_SERVER_URL}/reverse_text", params={"text": text})
+        res = httpx.get(f"{MCP_SERVER_URL}/query_db", params={"sql_query": sql_query})
         return res.json().get("text", "No content")
     except Exception as e:
         return f"Error: {str(e)}"
-
-
 
 
 file_read_tool = StructuredTool.from_function(
@@ -69,14 +61,18 @@ calc_sum_tool = StructuredTool.from_function(
     }
 )
 
-reverse_text_tool = StructuredTool.from_function(
-    name="reverse_text",
-    description="Reverses the input text. Input should be a dictionary with numbered arguments (e.g. {'arguments': {'arg1': 'text to reverse'}}).",
-    func=call_reverse_text,
+query_db_tool = StructuredTool.from_function(
+    name="query_db",
+    description="""Executes SQL queries to retrieve data from the database. 
+    You should create appropriate SQL queries based on the user's request.
+    The database contains various tables with information.
+    First analyze the user's request, then create and execute an SQL query.
+    Return the results in a clear format.""",
+    func=call_query_db,
     args_schema={
         "arguments": {
             "type": "object",
-            "description": "Dictionary containing text to reverse"
+            "description": "Dictionary containing SQL query"
         }
     }
 )
@@ -85,6 +81,6 @@ reverse_text_tool = StructuredTool.from_function(
 available_tools = [
     file_read_tool,
     calc_sum_tool,
-    reverse_text_tool
+    query_db_tool
 ]
 

@@ -7,11 +7,11 @@ import json
 
 from app.utils.mcp_tools import available_tools
 from app.utils.llm import get_llm
-from app.utils.utils import UtilsFunctions, AgentState
+from app.utils.utils import UtilsFunctions
 from app.utils.parser import ExaOneOutputParser
 from app.utils.prompt import prompt_manager
 from app.config.constants import ErrorMessage
-
+from app.schema.base import AgentState
 
 utils_functions = UtilsFunctions()
 

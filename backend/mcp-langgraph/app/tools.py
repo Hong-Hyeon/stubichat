@@ -4,6 +4,9 @@ from app.config.base import vllm_server_url
 import json
 from typing import Optional
 
+# Import the RAG tool
+from app.rag_tool import rag_tool
+
 class VLLMTool(BaseTool):
     name = "vllm"
     description = "Generate creative text based on a prompt. Input should be the prompt text."
@@ -51,9 +54,18 @@ class EchoTool(BaseTool):
 vllm_tool = VLLMTool()
 echo_tool = EchoTool()
 
-# 사용 가능한 도구 목록
-available_tools = [vllm_tool, echo_tool]
+# 사용 가능한 도구 목록 (RAG 도구 추가)
+available_tools = [vllm_tool, echo_tool, rag_tool]
 
 # 도구 설명 검증
 for tool in available_tools:
-    print(f"Tool {tool.name}: {tool.description}") 
+    print(f"Tool {tool.name}: {tool.description}")
+    
+# RAG 도구 사용 예시 출력
+print("\n=== RAG Tool Usage Examples ===")
+print("RAG 도구를 사용하여 다음과 같은 작업을 수행할 수 있습니다:")
+print("1. 문서 추가: {\"action\": \"ingest\", \"text\": \"문서 내용\", \"title\": \"제목\"}")
+print("2. 지식 검색: {\"action\": \"query\", \"query\": \"질문 내용\"}")
+print("3. 문서 목록: {\"action\": \"list\"}")
+print("4. 시스템 통계: {\"action\": \"stats\"}")
+print("===================================\n") 

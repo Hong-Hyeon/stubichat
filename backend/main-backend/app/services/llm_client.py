@@ -32,13 +32,38 @@ class LLMClient:
                 else:
                     return await client.request(method, url, json=data)
     
+    def _convert_chat_to_generate_request(self, chat_request: ChatRequest) -> Dict[str, Any]:
+        """Convert ChatRequest to GenerateRequest format for LLM agent."""
+        # Convert messages and handle datetime serialization
+        messages = []
+        for msg in chat_request.messages:
+            msg_dict = msg.model_dump()
+            # Convert datetime to ISO string if present
+            if msg_dict.get("timestamp") and hasattr(msg_dict["timestamp"], "isoformat"):
+                msg_dict["timestamp"] = msg_dict["timestamp"].isoformat()
+            messages.append(msg_dict)
+        
+        # Wrap in request field as expected by LLM agent
+        return {
+            "request": {
+                "messages": messages,
+                "stream": chat_request.stream,
+                "temperature": chat_request.temperature,
+                "max_tokens": chat_request.max_tokens,
+                "model": chat_request.model
+            }
+        }
+    
     async def generate_text(self, request: ChatRequest) -> Dict[str, Any]:
         """Generate text using the LLM agent service."""
         try:
+            # Convert ChatRequest to GenerateRequest format
+            generate_data = self._convert_chat_to_generate_request(request)
+            
             response = await self._make_request(
                 "POST", 
-                "/generate", 
-                data=request.model_dump()
+                "/generate/", 
+                data=generate_data
             )
             response.raise_for_status()
             return response.json()
@@ -52,23 +77,24 @@ class LLMClient:
     async def stream_text(self, request: ChatRequest) -> AsyncGenerator[StreamChunk, None]:
         """Stream text generation from the LLM agent service."""
         try:
-            async with self._make_request(
-                "POST", 
-                "/generate/stream", 
-                data=request.model_dump(),
-                stream=True
-            ) as response:
-                response.raise_for_status()
-                
-                async for line in response.aiter_lines():
-                    if line.strip():
-                        try:
-                            chunk_data = json.loads(line)
-                            yield StreamChunk(**chunk_data)
-                        except json.JSONDecodeError:
-                            self.logger.warning(f"Invalid JSON in stream: {line}")
-                            continue
-                            
+            # Convert ChatRequest to GenerateRequest format
+            generate_data = self._convert_chat_to_generate_request(request)
+            
+            url = f"{self.base_url}/generate/stream"
+            
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                async with client.stream("POST", url, json=generate_data) as response:
+                    response.raise_for_status()
+                    
+                    async for line in response.aiter_lines():
+                        if line.strip():
+                            try:
+                                chunk_data = json.loads(line)
+                                yield StreamChunk(**chunk_data)
+                            except json.JSONDecodeError:
+                                self.logger.warning(f"Invalid JSON in stream: {line}")
+                                continue
+                                
         except httpx.HTTPStatusError as e:
             self.logger.error(f"LLM Agent stream HTTP error: {e.response.status_code}")
             raise

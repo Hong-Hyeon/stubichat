@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi import APIRouter, HTTPException, Request, Depends, Body
 from fastapi.responses import StreamingResponse
 from typing import AsyncGenerator
 import json
@@ -6,7 +6,6 @@ import uuid
 from datetime import datetime
 
 from app.models.chat import ChatRequest, ChatResponse, ConversationState, HealthResponse
-from app.core.graph import conversation_graph
 from app.factory.service_factory import get_service_factory, ServiceFactory
 from app.utils.logger import get_logger, log_performance, log_request_info
 from app.core.config import settings
@@ -20,13 +19,19 @@ def get_llm_client(service_factory: ServiceFactory = Depends(get_service_factory
     return service_factory.llm_client
 
 
+def get_conversation_graph(service_factory: ServiceFactory = Depends(get_service_factory)):
+    """Dependency to get conversation graph from service factory."""
+    return service_factory.conversation_graph
+
+
 @router.post("/", response_model=ChatResponse)
 async def chat(
-    request: ChatRequest,
     http_request: Request,
-    llm_client=Depends(get_llm_client)
+    request: ChatRequest = Body(..., embed=True),
+    llm_client=Depends(get_llm_client),
+    conversation_graph=Depends(get_conversation_graph)
 ):
-    """Process a chat request and return a response."""
+    """Process a chat request using LangGraph workflow and return a response."""
     start_time = datetime.now()
     
     try:
@@ -39,30 +44,46 @@ async def chat(
             metadata={
                 "temperature": request.temperature,
                 "max_tokens": request.max_tokens,
-                "model": request.model
+                "model": request.model,
+                "stream": request.stream
             }
         )
         
-        # Execute conversation graph
-        with log_performance(logger, "conversation_graph_execution"):
-            final_state = await conversation_graph.ainvoke(state)
+        # Execute LangGraph workflow
+        with log_performance(logger, "langgraph_conversation_workflow"):
+            # Convert ConversationState to dictionary for LangGraph
+            state_dict = {
+                "messages": state.messages,
+                "metadata": state.metadata,
+                "session_id": state.session_id
+            }
+            final_state = await conversation_graph.ainvoke(state_dict)
         
-        # Extract response
-        if final_state.messages and final_state.messages[-1].role.value == "assistant":
-            response_content = final_state.messages[-1].content
-        else:
-            raise HTTPException(status_code=500, detail="No response generated")
+        # Extract the last assistant message as response
+        # final_state is now a dictionary, not a ConversationState object
+        messages = final_state.get("messages", [])
+        if not messages:
+            raise HTTPException(status_code=500, detail="No messages in final state from LangGraph workflow")
+        
+        # Find the last assistant message
+        assistant_messages = [msg for msg in messages if msg.get("role") == "assistant"]
+        if not assistant_messages:
+            raise HTTPException(status_code=500, detail="No response generated from LangGraph workflow")
+        
+        last_assistant_message = assistant_messages[-1]
         
         # Create response
         response = ChatResponse(
-            response=response_content,
+            response=last_assistant_message.get("content", ""),
             model=request.model,
-            usage=final_state.metadata.get("llm_response", {}).get("usage"),
+            usage=final_state.get("metadata", {}).get("usage"),
             finish_reason="stop"
         )
         
         duration = (datetime.now() - start_time).total_seconds()
         log_request_info(logger, http_request.method, http_request.url.path, 200, duration)
+        
+        logger.info(f"Chat request processed successfully. Response length: {len(response.response)}")
         
         return response
         
@@ -75,11 +96,11 @@ async def chat(
 
 @router.post("/stream")
 async def chat_stream(
-    request: ChatRequest,
     http_request: Request,
+    request: ChatRequest = Body(..., embed=True),
     llm_client=Depends(get_llm_client)
 ):
-    """Process a chat request and stream the response."""
+    """Process a chat request and stream the response directly from LLM agent."""
     start_time = datetime.now()
     
     try:
@@ -87,7 +108,7 @@ async def chat_stream(
         
         async def generate_stream() -> AsyncGenerator[str, None]:
             try:
-                # Stream from LLM agent service
+                # Stream directly from LLM agent service
                 async for chunk in llm_client.stream_text(request):
                     yield f"data: {chunk.model_dump_json()}\n\n"
                 

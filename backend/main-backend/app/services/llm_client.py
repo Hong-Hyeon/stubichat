@@ -10,9 +10,9 @@ import json
 class LLMClient:
     """HTTP client for communicating with the LLM Agent service."""
     
-    def __init__(self):
-        self.base_url = settings.llm_agent_url
-        self.timeout = settings.llm_agent_timeout
+    def __init__(self, base_url: Optional[str] = None, timeout: Optional[int] = None):
+        self.base_url = base_url or settings.llm_agent_url
+        self.timeout = timeout or settings.llm_agent_timeout
         self.logger = get_logger("llm_client")
         
     async def _make_request(
@@ -87,5 +87,5 @@ class LLMClient:
             return {"status": "unhealthy", "error": str(e)}
 
 
-# Global LLM client instance
+# Global LLM client instance (for backward compatibility)
 llm_client = LLMClient() 

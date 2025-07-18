@@ -1,9 +1,12 @@
 from pydantic_settings import BaseSettings
-from typing import Optional
+from typing import Optional, List
 import os
+from pathlib import Path
 
 
 class Settings(BaseSettings):
+    """Application settings with environment variable support."""
+    
     # Application settings
     app_name: str = "Stubichat Main Backend"
     app_version: str = "1.0.0"
@@ -34,17 +37,25 @@ class Settings(BaseSettings):
     log_format: str = "{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}"
     
     # CORS settings
-    cors_origins: list = ["http://localhost:3000", "http://localhost:3001"]
+    cors_origins: List[str] = ["http://localhost:3000", "http://localhost:3001"]
     
     class Config:
         env_file = ".env"
+        env_file_encoding = "utf-8"
         case_sensitive = False
-
-
-# Global settings instance
-settings = Settings()
+        extra = "ignore"
 
 
 def get_settings() -> Settings:
-    """Get application settings."""
-    return settings 
+    """Get application settings with proper .env loading."""
+    # Load .env file from the project root
+    env_path = Path(__file__).parent.parent.parent.parent / ".env"
+    if env_path.exists():
+        from dotenv import load_dotenv
+        load_dotenv(env_path)
+    
+    return Settings()
+
+
+# Global settings instance
+settings = get_settings() 

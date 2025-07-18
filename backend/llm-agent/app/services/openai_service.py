@@ -12,18 +12,23 @@ from app.models.requests import Message, StreamChunk
 class OpenAIService:
     """Service for interacting with OpenAI API."""
     
-    def __init__(self):
-        self.client = AsyncOpenAI(
-            api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
-            organization=settings.openai_organization
-        )
+    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None, organization: Optional[str] = None):
+        self.api_key = api_key or settings.openai_api_key
+        self.base_url = base_url or settings.openai_base_url
+        self.organization = organization or settings.openai_organization
         self.logger = get_logger("openai_service")
+        
+        # Initialize OpenAI client
+        self.client = AsyncOpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            organization=self.organization
+        )
         
         # Initialize LangChain client for compatibility
         self.langchain_client = ChatOpenAI(
-            openai_api_key=settings.openai_api_key,
-            openai_api_base=settings.openai_base_url,
+            openai_api_key=self.api_key,
+            openai_api_base=self.base_url,
             model=settings.default_model,
             temperature=settings.temperature,
             max_tokens=settings.max_tokens
@@ -144,5 +149,5 @@ class OpenAIService:
             }
 
 
-# Global OpenAI service instance
+# Global OpenAI service instance (for backward compatibility)
 openai_service = OpenAIService() 

@@ -1,345 +1,355 @@
-# Stubichat Backend - Microservice Architecture
+# Stubichat Backend
 
-A modern, scalable backend system built with FastAPI and LangGraph, designed for macOS without GPU dependencies.
+A production-ready microservice backend for conversational AI applications, built with FastAPI, LangGraph, and OpenAI API.
 
 ## 🏗️ Architecture
 
+The backend follows a **microservice architecture** with two main services:
+
+### 1. Main Backend Service (`main-backend`)
+- **Port**: 8000
+- **Purpose**: Orchestration and conversation management
+- **Technologies**: FastAPI, LangGraph, LangChain
+- **Features**:
+  - Conversation state management
+  - LangGraph workflow orchestration
+  - Chat history and context management
+  - Multi-modal input processing
+  - Streaming responses
+
+### 2. LLM Agent Service (`llm-agent`)
+- **Port**: 8001
+- **Purpose**: Direct LLM interactions
+- **Technologies**: FastAPI, OpenAI API
+- **Features**:
+  - OpenAI API integration
+  - Text generation and streaming
+  - Model selection and configuration
+  - Rate limiting and error handling
+
+## 🏭 Factory Pattern Implementation
+
+Both services implement the **Factory Pattern** for improved maintainability, testability, and dependency injection:
+
+### App Factory
+- **Location**: `app/factory/app_factory.py`
+- **Purpose**: Creates and configures FastAPI applications
+- **Features**:
+  - Centralized application creation
+  - Middleware configuration
+  - Route registration
+  - Exception handling
+  - Health checks
+  - CORS configuration
+
+### Service Factory
+- **Location**: `app/factory/service_factory.py`
+- **Purpose**: Manages service dependencies
+- **Features**:
+  - Dependency injection
+  - Service lifecycle management
+  - Testing support
+  - Resource cleanup
+
+### Benefits
+- ✅ **Testability**: Easy to mock dependencies
+- ✅ **Maintainability**: Centralized configuration
+- ✅ **Flexibility**: Easy to swap implementations
+- ✅ **Production Ready**: Proper error handling and logging
+
+## 🔧 Configuration Management
+
+### Environment Variables
+The services use `python-dotenv` for loading configuration from `.env` files:
+
+```bash
+# Copy the example configuration
+cp env.example .env
+
+# Edit .env with your settings
+nano .env
 ```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Frontend      │    │    Nginx         │    │  OpenAI API     │
-│   (Next.js)     │◄──►│  (Reverse Proxy) │◄──►│                │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
-                                │
-                       ┌────────┴────────┐
-                       │                 │
-               ┌───────▼───────┐ ┌──────▼──────┐
-               │ Main Backend  │ │ LLM Agent   │
-               │ (Port 8000)   │ │ (Port 8001) │
-               │ FastAPI +     │ │ OpenAI API  │
-               │ LangGraph     │ │ Integration │
-               └───────────────┘ └─────────────┘
+
+### Key Configuration
+```bash
+# OpenAI Configuration
+OPENAI_API_KEY=your-openai-api-key-here
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_ORGANIZATION=your-organization-id-optional
+
+# Model Configuration
+DEFAULT_MODEL=gpt-4
+MAX_TOKENS=4000
+TEMPERATURE=0.7
+
+# Service Configuration
+MAIN_BACKEND_HOST=0.0.0.0
+MAIN_BACKEND_PORT=8000
+LLM_AGENT_HOST=0.0.0.0
+LLM_AGENT_PORT=8001
+
+# Security
+SECRET_KEY=your-secret-key-change-in-production
 ```
 
 ## 🚀 Quick Start
 
 ### Prerequisites
+- Python 3.11+
+- Docker and Docker Compose
+- OpenAI API key
 
-1. **Docker and Docker Compose** installed
-2. **OpenAI API Key** (required for LLM functionality)
-3. **Environment Configuration** (see setup below)
-
-### Setup
-
-1. **Clone and navigate to backend directory:**
+### 1. Setup Environment
 ```bash
-cd backend
-```
+# Clone the repository
+git clone <repository-url>
+cd stubichat/backend
 
-2. **Create environment file:**
-```bash
+# Copy environment configuration
 cp env.example .env
-# Edit .env with your OpenAI API key and other settings
+
+# Edit .env with your OpenAI API key
+nano .env
 ```
 
-3. **Start all services:**
+### 2. Start Services
 ```bash
+# Start all services with Docker Compose
 docker-compose up -d
+
+# Or start services individually
+docker-compose up main-backend
+docker-compose up llm-agent
 ```
 
-4. **Check service status:**
+### 3. Verify Installation
 ```bash
-docker-compose ps
+# Test factory pattern implementation
+python test_factory_structure.py
+
+# Test service health
+curl http://localhost:8000/health
+curl http://localhost:8001/health
+
+# Test chat functionality
+python test_setup.py
 ```
 
-## 📋 Services
+## 📁 Project Structure
 
-### 1. Main Backend Service (`localhost:8000`)
+```
+backend/
+├── main-backend/                 # Main backend service
+│   ├── app/
+│   │   ├── api/                 # API routes
+│   │   ├── core/                # Core functionality
+│   │   ├── factory/             # Factory pattern
+│   │   ├── models/              # Pydantic models
+│   │   ├── services/            # Business logic
+│   │   └── utils/               # Utilities
+│   ├── Dockerfile
+│   └── requirements.txt
+├── llm-agent/                   # LLM agent service
+│   ├── app/
+│   │   ├── api/                 # API routes
+│   │   ├── core/                # Core functionality
+│   │   ├── factory/             # Factory pattern
+│   │   ├── models/              # Pydantic models
+│   │   ├── services/            # Business logic
+│   │   └── utils/               # Utilities
+│   ├── Dockerfile
+│   └── requirements.txt
+├── docker-compose.yml           # Service orchestration
+├── env.example                  # Environment template
+├── .env                         # Environment configuration
+└── README.md                    # This file
+```
 
-**Purpose:** FastAPI application with LangGraph orchestration
-- **Technology:** FastAPI + LangGraph + LangChain
-- **Port:** 8000
-- **Features:**
-  - Conversation management with LangGraph workflows
-  - HTTP client communication with LLM Agent
-  - Health monitoring and logging
-  - CORS support for frontend integration
+## 🔌 API Endpoints
 
-**Endpoints:**
-- `GET /` - Service status
-- `GET /health` - Health check
+### Main Backend (Port 8000)
+
+#### Chat Endpoints
 - `POST /chat/` - Process chat request
 - `POST /chat/stream` - Stream chat response
+- `GET /chat/health` - Health check
+
+#### General Endpoints
+- `GET /` - Service information
+- `GET /health` - Health check
 - `GET /docs` - API documentation (debug mode)
 
-### 2. LLM Agent Service (`localhost:8001`)
+### LLM Agent (Port 8001)
 
-**Purpose:** OpenAI API integration service
-- **Technology:** FastAPI + OpenAI SDK
-- **Port:** 8001
-- **Features:**
-  - Direct OpenAI API integration
-  - Streaming text generation
-  - Model parameter management
-  - Health monitoring
-
-**Endpoints:**
-- `GET /` - Service status
-- `GET /health` - Health check
+#### Generation Endpoints
 - `POST /generate/` - Generate text
 - `POST /generate/stream` - Stream text generation
+- `GET /generate/health` - Health check
+
+#### General Endpoints
+- `GET /` - Service information
+- `GET /health` - Health check
 - `GET /docs` - API documentation (debug mode)
-
-## 🔧 Configuration
-
-### Environment Variables
-
-Create a `.env` file in the backend directory:
-
-```bash
-# OpenAI Configuration
-OPENAI_API_KEY=your-openai-api-key-here
-OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_ORGANIZATION=your-org-id-optional
-
-# Main Backend Configuration
-DEBUG=true
-LOG_LEVEL=INFO
-SECRET_KEY=your-secret-key-change-in-production
-
-# LLM Agent Configuration
-LLM_AGENT_URL=http://localhost:8001
-LLM_AGENT_TIMEOUT=30
-
-# CORS Settings
-CORS_ORIGINS=["http://localhost:3000", "http://localhost:3001"]
-
-# Model Settings
-DEFAULT_MODEL=gpt-4
-MAX_TOKENS=4000
-TEMPERATURE=0.7
-```
-
-### Service Configuration
-
-Each service has its own configuration in `app/core/config.py`:
-- **Main Backend:** `main-backend/app/core/config.py`
-- **LLM Agent:** `llm-agent/app/core/config.py`
 
 ## 🧪 Testing
 
-### Health Checks
-
+### Factory Pattern Tests
 ```bash
-# Check main backend
-curl http://localhost:8000/health
-
-# Check LLM agent
-curl http://localhost:8001/health
+# Test factory pattern implementation
+python test_factory_structure.py
 ```
 
-### API Testing
+### Service Tests
+```bash
+# Test service functionality
+python test_setup.py
+```
 
+### Manual Testing
 ```bash
 # Test chat endpoint
 curl -X POST http://localhost:8000/chat/ \
   -H "Content-Type: application/json" \
   -d '{
-    "messages": [
-      {"role": "user", "content": "Hello, how are you?"}
-    ],
-    "stream": false,
-    "temperature": 0.7,
-    "model": "gpt-4"
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "model": "gpt-4",
+    "temperature": 0.7
   }'
 
 # Test streaming
-curl -X POST http://localhost:8000/chat/stream \
+curl -X POST http://localhost:8001/generate/stream \
   -H "Content-Type: application/json" \
   -d '{
-    "messages": [
-      {"role": "user", "content": "Tell me a story"}
-    ],
-    "stream": true
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "model": "gpt-4"
   }'
+```
+
+## 🔧 Development
+
+### Local Development
+```bash
+# Install dependencies
+pip install -r main-backend/requirements.txt
+pip install -r llm-agent/requirements.txt
+
+# Start services locally
+cd main-backend && python -m uvicorn app.main:app --reload --port 8000
+cd llm-agent && python -m uvicorn app.main:app --reload --port 8001
+```
+
+### Adding New Features
+
+#### 1. Add New Service
+```python
+# Create service factory
+class NewServiceFactory:
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self._new_service = None
+    
+    @property
+    def new_service(self):
+        if self._new_service is None:
+            self._new_service = NewService()
+        return self._new_service
+```
+
+#### 2. Add New API Endpoint
+```python
+# Create router
+router = APIRouter(prefix="/new", tags=["new"])
+
+@router.post("/")
+async def new_endpoint(
+    request: NewRequest,
+    new_service=Depends(get_new_service)
+):
+    return await new_service.process(request)
+```
+
+#### 3. Update App Factory
+```python
+# Add to create_routes method
+app.include_router(new_router)
+```
+
+## 🐳 Docker
+
+### Build Images
+```bash
+# Build all services
+docker-compose build
+
+# Build specific service
+docker-compose build main-backend
+docker-compose build llm-agent
+```
+
+### Run Services
+```bash
+# Start all services
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop services
+docker-compose down
 ```
 
 ## 📊 Monitoring
 
-### Logs
+### Health Checks
+- Main Backend: `http://localhost:8000/health`
+- LLM Agent: `http://localhost:8001/health`
 
-```bash
-# View all service logs
-docker-compose logs -f
+### Logging
+- Structured logging with Loguru
+- Request/response logging
+- Performance metrics
+- Error tracking
 
-# View specific service logs
-docker-compose logs -f main-backend
-docker-compose logs -f llm-agent
-```
-
-### Health Monitoring
-
-All services include comprehensive health checks:
-- **Main Backend:** `http://localhost:8000/health`
-- **LLM Agent:** `http://localhost:8001/health`
-
-### Performance Metrics
-
-Services log performance metrics including:
-- Request/response times
+### Metrics
+- Request duration
+- Error rates
+- Service health status
 - OpenAI API usage
-- Error rates and types
-- Service dependencies status
 
-## 🔄 Development Workflow
+## 🔒 Security
 
-### Local Development
+### Environment Variables
+- Sensitive data stored in `.env` files
+- `.env` files excluded from version control
+- Production secrets managed securely
 
-1. **Start services in development mode:**
-```bash
-docker-compose up -d
-```
-
-2. **View logs in real-time:**
-```bash
-docker-compose logs -f
-```
-
-3. **Make code changes** - Services auto-reload with volume mounts
-
-4. **Test changes** - Use the health endpoints and API documentation
-
-### Adding New Features
-
-1. **Main Backend:** Add new endpoints in `main-backend/app/api/`
-2. **LLM Agent:** Add new OpenAI integrations in `llm-agent/app/services/`
-3. **LangGraph Workflows:** Extend workflows in `main-backend/app/core/graph.py`
-
-## 🏗️ Project Structure
-
-```
-backend/
-├── docker-compose.yml          # Service orchestration
-├── env.example                 # Environment template
-├── README.md                   # This file
-├── logs/                       # Shared logs directory
-├── main-backend/              # Main backend service
-│   ├── Dockerfile             # Multi-stage build
-│   ├── .dockerignore          # Build optimization
-│   ├── requirements.txt       # Python dependencies
-│   └── app/                   # Application code
-│       ├── main.py            # FastAPI application
-│       ├── core/              # Core functionality
-│       │   ├── config.py      # Configuration
-│       │   └── graph.py       # LangGraph workflows
-│       ├── api/               # API endpoints
-│       │   └── chat.py        # Chat endpoints
-│       ├── models/            # Pydantic models
-│       │   └── chat.py        # Chat models
-│       ├── services/          # Business logic
-│       │   └── llm_client.py  # LLM Agent client
-│       └── utils/             # Utilities
-│           └── logger.py      # Logging configuration
-└── llm-agent/                 # LLM agent service
-    ├── Dockerfile             # Multi-stage build
-    ├── .dockerignore          # Build optimization
-    ├── requirements.txt       # Python dependencies
-    └── app/                   # Application code
-        ├── main.py            # FastAPI application
-        ├── core/              # Core functionality
-        │   └── config.py      # Configuration
-        ├── api/               # API endpoints
-        │   └── generate.py    # Generate endpoints
-        ├── models/            # Pydantic models
-        │   └── requests.py    # Request/response models
-        ├── services/          # Business logic
-        │   └── openai_service.py # OpenAI integration
-        └── utils/             # Utilities
-            └── logger.py      # Logging configuration
-```
+### API Security
+- CORS configuration
+- Input validation with Pydantic
+- Rate limiting
+- Error handling without information leakage
 
 ## 🚀 Production Deployment
 
-### Security Considerations
-
-1. **Environment Variables:** Use secure secrets management
-2. **API Keys:** Rotate OpenAI API keys regularly
-3. **Network Security:** Use proper firewall rules
-4. **HTTPS:** Enable SSL/TLS termination
+### Environment Setup
+1. Configure production environment variables
+2. Set up proper logging and monitoring
+3. Configure reverse proxy (nginx)
+4. Set up SSL certificates
 
 ### Scaling
-
-```bash
-# Scale individual services
-docker-compose up -d --scale llm-agent=3
-
-# Using Docker Swarm
-docker stack deploy -c docker-compose.yml stubichat
-```
-
-### Monitoring
-
-- **Health Checks:** All services include health endpoints
-- **Logging:** Structured logging with loguru
-- **Metrics:** Performance monitoring built-in
-- **Error Handling:** Comprehensive error handling and reporting
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-1. **OpenAI API Key Missing:**
-```bash
-# Check environment variable
-echo $OPENAI_API_KEY
-
-# Verify in .env file
-cat .env | grep OPENAI_API_KEY
-```
-
-2. **Service Communication Issues:**
-```bash
-# Check network connectivity
-docker-compose exec main-backend curl http://llm-agent:8001/health
-```
-
-3. **Port Conflicts:**
-```bash
-# Check port usage
-sudo netstat -tulpn | grep :8000
-sudo netstat -tulpn | grep :8001
-```
-
-4. **Build Issues:**
-```bash
-# Rebuild services
-docker-compose build --no-cache
-docker-compose up -d
-```
-
-### Debug Mode
-
-Enable debug logging:
-```bash
-# Set environment variables
-export DEBUG=true
-export LOG_LEVEL=DEBUG
-docker-compose up -d
-```
+- Horizontal scaling with load balancers
+- Database connection pooling
+- Redis for caching (optional)
+- Message queues for async processing
 
 ## 🤝 Contributing
 
-1. **Development guidelines:**
-   - Follow the established code structure
-   - Add proper logging and error handling
-   - Include health checks for new services
-   - Test with realistic workloads
+1. Follow the factory pattern for new features
+2. Add tests for new functionality
+3. Update documentation
+4. Use conventional commit messages
 
-2. **Adding new services:**
-   - Follow the established Docker patterns
-   - Include health checks and proper logging
-   - Update this README with new service information
+## 📄 License
 
-3. **Performance testing:**
-   - Monitor resource usage during development
-   - Test with realistic workloads
-   - Validate health check responsiveness 
+This project is licensed under the MIT License - see the LICENSE file for details. 

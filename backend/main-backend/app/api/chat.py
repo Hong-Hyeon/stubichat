@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.responses import StreamingResponse
 from typing import AsyncGenerator
 import json
@@ -7,7 +7,7 @@ from datetime import datetime
 
 from app.models.chat import ChatRequest, ChatResponse, ConversationState, HealthResponse
 from app.core.graph import conversation_graph
-from app.services.llm_client import llm_client
+from app.factory.service_factory import get_service_factory, ServiceFactory
 from app.utils.logger import get_logger, log_performance, log_request_info
 from app.core.config import settings
 
@@ -15,8 +15,17 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 logger = get_logger("chat_api")
 
 
+def get_llm_client(service_factory: ServiceFactory = Depends(get_service_factory)):
+    """Dependency to get LLM client from service factory."""
+    return service_factory.llm_client
+
+
 @router.post("/", response_model=ChatResponse)
-async def chat(request: ChatRequest, http_request: Request):
+async def chat(
+    request: ChatRequest,
+    http_request: Request,
+    llm_client=Depends(get_llm_client)
+):
     """Process a chat request and return a response."""
     start_time = datetime.now()
     
@@ -65,7 +74,11 @@ async def chat(request: ChatRequest, http_request: Request):
 
 
 @router.post("/stream")
-async def chat_stream(request: ChatRequest, http_request: Request):
+async def chat_stream(
+    request: ChatRequest,
+    http_request: Request,
+    llm_client=Depends(get_llm_client)
+):
     """Process a chat request and stream the response."""
     start_time = datetime.now()
     
@@ -112,7 +125,7 @@ async def chat_stream(request: ChatRequest, http_request: Request):
 
 
 @router.get("/health", response_model=HealthResponse)
-async def health_check():
+async def health_check(llm_client=Depends(get_llm_client)):
     """Health check endpoint."""
     try:
         # Check LLM agent service health

@@ -1,0 +1,72 @@
+services:
+  # Main Backend Service (FastAPI + LangGraph)
+  main-backend:
+    build:
+      context: ./main-backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./main-backend/app:/app/app
+      - ./logs:/app/logs
+    environment:
+      - PYTHONPATH=/app
+      - LLM_AGENT_URL=http://llm-agent:8001
+      - DEBUG=true
+    networks:
+      - stubichat_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      llm-agent:
+        condition: service_healthy
+
+  # LLM Agent Service (OpenAI-based)
+  llm-agent:
+    build:
+      context: ./llm-agent
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./llm-agent/app:/app/app
+      - ./logs:/app/logs
+    environment:
+      - PYTHONPATH=/app
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+      - DEBUG=true
+    networks:
+      - stubichat_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Nginx Reverse Proxy (optional)
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    networks:
+      - stubichat_network
+    restart: unless-stopped
+    depends_on:
+      - main-backend
+      - llm-agent
+
+networks:
+  stubichat_network:
+    driver: bridge 

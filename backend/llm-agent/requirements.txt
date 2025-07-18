@@ -1,0 +1,26 @@
+# FastAPI and web framework
+fastapi==0.115.12
+uvicorn[standard]==0.34.1
+pydantic==2.11.3
+pydantic-settings==2.8.1
+
+# OpenAI integration - Compatible versions
+openai==1.76.0
+langchain-openai==0.0.8
+
+# HTTP client
+httpx==0.25.2
+aiohttp==3.11.18
+
+# Utilities
+python-dotenv==1.1.0
+typing-extensions==4.13.2
+anyio==4.9.0
+orjson==3.9.15
+
+# Logging and monitoring
+loguru==0.7.2
+prometheus-fastapi-instrumentator==7.1.0
+
+# Security
+python-multipart==0.0.20 

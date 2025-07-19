@@ -1,5 +1,8 @@
+from fastapi import APIRouter
 from pydantic import BaseModel, Field
 from typing import Dict, Any
+
+router = APIRouter(tags=["echo"])
 
 
 class EchoInput(BaseModel):
@@ -15,7 +18,8 @@ class EchoOutput(BaseModel):
     prefix: str = Field(..., description="The prefix that was used")
 
 
-def echo_tool_function(input_data: EchoInput) -> EchoOutput:
+@router.post("/echo", response_model=EchoOutput, operation_id="echo_tool")
+async def echo_tool(input_data: EchoInput) -> EchoOutput:
     """
     Echo tool that returns the input message with an optional prefix.
     
@@ -27,14 +31,4 @@ def echo_tool_function(input_data: EchoInput) -> EchoOutput:
         result=result,
         original_message=input_data.message,
         prefix=input_data.prefix
-    )
-
-
-# Tool metadata for MCP
-echo_tool_metadata = {
-    "name": "echo",
-    "description": "Echo tool that returns the input message with an optional prefix",
-    "input_schema": EchoInput.model_json_schema(),
-    "output_schema": EchoOutput.model_json_schema(),
-    "handler": echo_tool_function
-} 
+    ) 

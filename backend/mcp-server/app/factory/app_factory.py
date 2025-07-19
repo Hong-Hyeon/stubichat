@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi_mcp import FastApiMCP
 from contextlib import asynccontextmanager
 import time
 from datetime import datetime
@@ -8,11 +9,10 @@ from typing import Optional
 
 from app.core.config import Settings
 from app.utils.logger import get_logger, log_request_info
-from app.api.tools import router as tools_router
 
 
 class AppFactory:
-    """Factory for creating FastAPI application instances."""
+    """Factory for creating FastAPI application instances with MCP integration."""
     
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -86,8 +86,9 @@ class AppFactory:
     def create_routes(self, app: FastAPI):
         """Add routes to the FastAPI application."""
         
-        # Include routers
-        app.include_router(tools_router)
+        # Import and include routers
+        from app.tools import echo_router
+        app.include_router(echo_router)
         
         # Root endpoint
         @app.get("/")
@@ -112,8 +113,27 @@ class AppFactory:
                 "timestamp": datetime.now().isoformat()
             }
     
+    def create_mcp_server(self, app: FastAPI):
+        """Create and mount the MCP server to the FastAPI application."""
+        try:
+            # Create FastApiMCP instance
+            mcp = FastApiMCP(
+                app,
+                name=self.settings.mcp_server_name,
+                description=self.settings.mcp_server_description
+            )
+            
+            # Mount the MCP server
+            mcp.mount()
+            
+            self.logger.info("MCP server mounted successfully at /mcp")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create MCP server: {str(e)}")
+            raise
+    
     def create_app(self, settings: Optional[Settings] = None) -> FastAPI:
-        """Create and configure the FastAPI application."""
+        """Create and configure the FastAPI application with MCP integration."""
         
         if settings is None:
             settings = self.settings
@@ -136,11 +156,14 @@ class AppFactory:
         # Add routes
         self.create_routes(app)
         
+        # Create and mount MCP server
+        self.create_mcp_server(app)
+        
         return app
 
 
 def create_app(settings: Optional[Settings] = None) -> FastAPI:
-    """Factory function to create FastAPI application."""
+    """Factory function to create FastAPI application with MCP integration."""
     from app.core.config import get_settings
     
     if settings is None:

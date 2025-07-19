@@ -61,10 +61,22 @@ class MCPIntegrationTester:
         
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(f"{self.base_urls['mcp_server']}/tools/list") as response:
+                async with session.get(f"{self.base_urls['mcp_server']}/openapi.json") as response:
                     if response.status == 200:
                         data = await response.json()
-                        tools = data.get("tools", [])
+                        # Extract tools from OpenAPI schema
+                        tools = []
+                        for path, methods in data.get("paths", {}).items():
+                            for method, operation in methods.items():
+                                if method.lower() == "post" and "operationId" in operation:
+                                    operation_id = operation["operationId"]
+                                    if operation_id.endswith("_tool"):
+                                        tool_name = operation_id.replace("_tool", "")
+                                        tools.append({
+                                            "name": tool_name,
+                                            "description": operation.get("description", "")
+                                        })
+                        
                         if len(tools) > 0:
                             print(f"✅ MCP Server Tools List: Found {len(tools)} tools")
                             for tool in tools:
@@ -72,7 +84,7 @@ class MCPIntegrationTester:
                             self.results.append({
                                 "test": "mcp_server_tools_list",
                                 "status": "PASS",
-                                "details": data
+                                "details": {"tools": tools}
                             })
                         else:
                             print("❌ MCP Server Tools List: No tools found")
@@ -109,7 +121,7 @@ class MCPIntegrationTester:
                 }
                 
                 async with session.post(
-                    f"{self.base_urls['mcp_server']}/tools/echo",
+                    f"{self.base_urls['mcp_server']}/echo",
                     json=test_request
                 ) as response:
                     if response.status == 200:

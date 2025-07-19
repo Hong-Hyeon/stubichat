@@ -5,7 +5,7 @@ from app.core.config import get_settings
 
 
 class MCPClient:
-    """Client for calling MCP tools from the main backend."""
+    """Client for calling MCP tools from the main backend using HTTP API."""
     
     def __init__(self, base_url: str = None):
         self.settings = get_settings()
@@ -15,7 +15,7 @@ class MCPClient:
     
     async def call_tool(self, tool_name: str, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Call an MCP tool by name with input data.
+        Call an MCP tool by name with input data using HTTP API.
         
         Args:
             tool_name: Name of the MCP tool to call
@@ -25,9 +25,10 @@ class MCPClient:
             Tool response data
         """
         try:
+            # Use the direct HTTP endpoint for the tool
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    f"{self.base_url}/tools/{tool_name}",
+                    f"{self.base_url}/{tool_name}",
                     json=input_data,
                     timeout=30.0
                 )
@@ -43,7 +44,7 @@ class MCPClient:
     
     async def list_tools(self) -> Dict[str, Any]:
         """
-        Get list of available MCP tools.
+        Get list of available MCP tools using OpenAPI schema.
         
         Returns:
             List of available tools
@@ -51,11 +52,28 @@ class MCPClient:
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    f"{self.base_url}/tools/list",
+                    f"{self.base_url}/openapi.json",
                     timeout=10.0
                 )
                 response.raise_for_status()
-                return response.json()
+                openapi_schema = response.json()
+                
+                # Extract tools from OpenAPI schema
+                tools = []
+                for path, methods in openapi_schema.get("paths", {}).items():
+                    for method, operation in methods.items():
+                        if method.lower() == "post" and "operationId" in operation:
+                            operation_id = operation["operationId"]
+                            if operation_id.endswith("_tool"):
+                                tool_name = operation_id.replace("_tool", "")
+                                tools.append({
+                                    "name": tool_name,
+                                    "description": operation.get("description", ""),
+                                    "input_schema": operation.get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema", {}),
+                                    "output_schema": operation.get("responses", {}).get("200", {}).get("content", {}).get("application/json", {}).get("schema", {})
+                                })
+                
+                return {"tools": tools}
                 
         except httpx.HTTPStatusError as e:
             self.logger.error(f"HTTP error listing tools: {e.response.status_code}")

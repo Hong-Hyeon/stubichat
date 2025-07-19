@@ -12,6 +12,7 @@ services:
     environment:
       - PYTHONPATH=/app
       - LLM_AGENT_URL=http://llm-agent:8001
+      - MCP_SERVER_URL=http://mcp-server:8002
       - DEBUG=true
     networks:
       - stubichat_network
@@ -46,6 +47,29 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # MCP Server Service (FastAPI-MCP)
+  mcp-server:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./mcp-server/app:/app/app
+      - ./logs:/app/logs
+    environment:
+      - PYTHONPATH=/app
+      - DEBUG=true
+    networks:
+      - stubichat_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -2,6 +2,7 @@ from typing import Optional
 from app.core.config import Settings
 from app.services.llm_client import LLMClient
 from app.core.graph import create_conversation_graph
+from app.services.mcp_client import MCPClient
 
 
 class ServiceFactory:
@@ -11,6 +12,7 @@ class ServiceFactory:
         self.settings = settings
         self._llm_client: Optional[LLMClient] = None
         self._conversation_graph = None
+        self._mcp_client: Optional[MCPClient] = None
     
     @property
     def llm_client(self) -> LLMClient:
@@ -26,10 +28,18 @@ class ServiceFactory:
             self._conversation_graph = create_conversation_graph()
         return self._conversation_graph
     
+    @property
+    def mcp_client(self) -> MCPClient:
+        """Get or create MCP client instance."""
+        if self._mcp_client is None:
+            self._mcp_client = MCPClient()
+        return self._mcp_client
+    
     def reset(self):
         """Reset all service instances (useful for testing)."""
         self._llm_client = None
         self._conversation_graph = None
+        self._mcp_client = None
 
 
 # Global service factory instance

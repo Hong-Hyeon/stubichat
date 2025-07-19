@@ -8,8 +8,7 @@ from typing import Optional
 
 from app.core.config import Settings
 from app.utils.logger import get_logger, log_request_info
-from app.api.chat import router as chat_router
-from app.api.mcp_tools import router as mcp_tools_router
+from app.api.tools import router as tools_router
 
 
 class AppFactory:
@@ -26,24 +25,17 @@ class AppFactory:
         async def lifespan(app: FastAPI):
             """Application lifespan manager for startup and shutdown events."""
             # Startup
-            self.logger.info("=== Stubichat Main Backend Starting Up ===")
+            self.logger.info("=== Stubichat MCP Server Starting Up ===")
             self.logger.info(f"App Name: {self.settings.app_name}")
             self.logger.info(f"Version: {self.settings.app_version}")
             self.logger.info(f"Debug Mode: {self.settings.debug}")
-            self.logger.info(f"LLM Agent URL: {self.settings.llm_agent_url}")
-            
-            try:
-                # Health check of LLM agent service
-                from app.services.llm_client import llm_client
-                health = await llm_client.health_check()
-                self.logger.info(f"LLM Agent Health: {health.get('status', 'unknown')}")
-            except Exception as e:
-                self.logger.warning(f"LLM Agent health check failed: {str(e)}")
+            self.logger.info(f"MCP Server Name: {self.settings.mcp_server_name}")
+            self.logger.info(f"MCP Server Version: {self.settings.mcp_server_version}")
             
             yield
             
             # Shutdown
-            self.logger.info("=== Stubichat Main Backend Shutting Down ===")
+            self.logger.info("=== Stubichat MCP Server Shutting Down ===")
         
         return lifespan
     
@@ -95,8 +87,7 @@ class AppFactory:
         """Add routes to the FastAPI application."""
         
         # Include routers
-        app.include_router(chat_router)
-        app.include_router(mcp_tools_router)
+        app.include_router(tools_router)
         
         # Root endpoint
         @app.get("/")
@@ -104,6 +95,8 @@ class AppFactory:
             return {
                 "message": self.settings.app_name,
                 "version": self.settings.app_version,
+                "mcp_server": self.settings.mcp_server_name,
+                "mcp_version": self.settings.mcp_server_version,
                 "status": "running",
                 "timestamp": datetime.now().isoformat()
             }
@@ -113,8 +106,9 @@ class AppFactory:
         async def health():
             return {
                 "status": "healthy",
-                "service": "main-backend",
+                "service": "mcp-server",
                 "version": self.settings.app_version,
+                "mcp_server": self.settings.mcp_server_name,
                 "timestamp": datetime.now().isoformat()
             }
     
@@ -127,7 +121,7 @@ class AppFactory:
         app = FastAPI(
             title=settings.app_name,
             version=settings.app_version,
-            description="Main backend service for Stubichat with LangGraph orchestration",
+            description=settings.mcp_server_description,
             docs_url="/docs" if settings.debug else None,
             redoc_url="/redoc" if settings.debug else None,
             lifespan=self.create_lifespan()

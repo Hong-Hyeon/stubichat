@@ -5,7 +5,10 @@ import json
 import uuid
 from datetime import datetime
 
-from app.models.chat import ChatRequest, ChatResponse, ConversationState, HealthResponse
+from app.models.chat import (
+    ChatRequest, ChatResponse, ConversationState, HealthResponse,
+    FrontendChatRequest, FrontendMessage, Message, MessageRole
+)
 from app.factory.service_factory import get_service_factory, ServiceFactory
 from app.utils.logger import get_logger, log_performance, log_request_info
 from app.core.config import settings
@@ -24,10 +27,41 @@ def get_conversation_graph(service_factory: ServiceFactory = Depends(get_service
     return service_factory.conversation_graph
 
 
+def convert_frontend_message_to_backend(frontend_msg: FrontendMessage) -> Message:
+    """Convert frontend message format to backend format."""
+    # Extract content from parts
+    content = ""
+    for part in frontend_msg.parts:
+        if isinstance(part, dict) and "text" in part:
+            content += part["text"]
+        elif isinstance(part, str):
+            content += part
+    
+    return Message(
+        role=MessageRole(frontend_msg.role),
+        content=content,
+        timestamp=datetime.utcnow()
+    )
+
+
+def map_model_name(frontend_model: str) -> str:
+    """Map frontend model names to actual OpenAI model names."""
+    model_mapping = {
+        "chat-model": "gpt-3.5-turbo",
+        "gpt-4": "gpt-4",
+        "gpt-3.5-turbo": "gpt-3.5-turbo",
+        "gpt-4-turbo": "gpt-4-turbo-preview",
+        "gpt-4o": "gpt-4o",
+        "gpt-4o-mini": "gpt-4o-mini"
+    }
+    
+    return model_mapping.get(frontend_model, "gpt-3.5-turbo")
+
+
 @router.post("/", response_model=ChatResponse)
 async def chat(
     http_request: Request,
-    request: ChatRequest = Body(..., embed=True),
+    request: FrontendChatRequest = Body(..., embed=True),
     llm_client=Depends(get_llm_client),
     conversation_graph=Depends(get_conversation_graph)
 ):
@@ -35,17 +69,26 @@ async def chat(
     start_time = datetime.now()
     
     try:
-        logger.info(f"Processing chat request with {len(request.messages)} messages")
+        logger.info(f"Processing frontend chat request for chat ID: {request.id}")
         
-        # Create conversation state
+        # Convert frontend message to backend format
+        backend_message = convert_frontend_message_to_backend(request.message)
+        
+        # Map frontend model name to actual OpenAI model name
+        actual_model = map_model_name(request.selectedChatModel)
+        
+        # Create conversation state with the single message
         state = ConversationState(
-            messages=request.messages,
-            session_id=str(uuid.uuid4()),
+            messages=[backend_message],
+            session_id=request.id,
             metadata={
-                "temperature": request.temperature,
-                "max_tokens": request.max_tokens,
-                "model": request.model,
-                "stream": request.stream
+                "temperature": 0.7,
+                "max_tokens": 1000,
+                "model": actual_model,  # Use mapped model name
+                "stream": True,
+                "chat_id": request.id,
+                "visibility": request.selectedVisibilityType,
+                "user": request.user
             }
         )
         
@@ -64,11 +107,25 @@ async def chat(
         
         # Extract the last assistant message as response
         messages = final_state.get("messages", [])
+        
         if not messages:
             raise HTTPException(status_code=500, detail="No messages in final state from LangGraph workflow")
         
-        # Find the last assistant message
-        assistant_messages = [msg for msg in messages if msg.get("role") == "assistant"]
+        # Find the last assistant message - handle both dict and object formats
+        assistant_messages = []
+        for msg in messages:
+            if isinstance(msg, dict):
+                if msg.get("role") == "assistant":
+                    assistant_messages.append(msg)
+            else:
+                # Handle Message objects
+                if hasattr(msg, 'role') and msg.role == MessageRole.ASSISTANT:
+                    assistant_messages.append({
+                        "role": "assistant",
+                        "content": msg.content,
+                        "timestamp": msg.timestamp.isoformat() if msg.timestamp else None
+                    })
+        
         if not assistant_messages:
             raise HTTPException(status_code=500, detail="No response generated from LangGraph workflow")
         
@@ -82,7 +139,7 @@ async def chat(
         # Create response with MCP tool metadata
         response = ChatResponse(
             response=last_assistant_message.get("content", ""),
-            model=request.model,
+            model=request.selectedChatModel,
             usage=metadata.get("llm_usage"),
             finish_reason="stop",
             metadata=metadata,
@@ -111,19 +168,34 @@ async def chat(
 @router.post("/stream")
 async def chat_stream(
     http_request: Request,
-    request: ChatRequest = Body(..., embed=True),
+    request: FrontendChatRequest = Body(..., embed=True),
     llm_client=Depends(get_llm_client)
 ):
     """Process a chat request and stream the response directly from LLM agent."""
     start_time = datetime.now()
     
     try:
-        logger.info(f"Processing streaming chat request with {len(request.messages)} messages")
+        logger.info(f"Processing streaming chat request for chat ID: {request.id}")
+        
+        # Convert frontend message to backend format
+        backend_message = convert_frontend_message_to_backend(request.message)
+        
+        # Map frontend model name to actual OpenAI model name
+        actual_model = map_model_name(request.selectedChatModel)
+        
+        # Create backend request format
+        backend_request = ChatRequest(
+            messages=[backend_message],
+            stream=True,
+            temperature=0.7,
+            max_tokens=1000,
+            model=actual_model  # Use mapped model name
+        )
         
         async def generate_stream() -> AsyncGenerator[str, None]:
             try:
                 # Stream directly from LLM agent service
-                async for chunk in llm_client.stream_text(request):
+                async for chunk in llm_client.stream_text(backend_request):
                     yield f"data: {chunk.model_dump_json()}\n\n"
                 
                 # Send end marker

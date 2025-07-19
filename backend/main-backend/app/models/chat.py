@@ -16,6 +16,23 @@ class Message(BaseModel):
     timestamp: Optional[datetime] = Field(default_factory=datetime.utcnow)
 
 
+class FrontendMessage(BaseModel):
+    """Frontend message format from ai-chatbot"""
+    id: str
+    role: str
+    parts: List[Dict[str, Any]]
+    experimental_attachments: Optional[List[Any]] = None
+
+
+class FrontendChatRequest(BaseModel):
+    """Frontend chat request format from ai-chatbot"""
+    id: str
+    message: FrontendMessage
+    selectedChatModel: str = "chat-model"
+    selectedVisibilityType: str = "private"
+    user: Optional[Dict[str, Any]] = None
+
+
 class ChatRequest(BaseModel):
     messages: List[Message]
     stream: bool = Field(default=True, description="Enable streaming response")

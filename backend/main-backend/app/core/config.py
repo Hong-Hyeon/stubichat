@@ -39,8 +39,14 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_format: str = "{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}"
     
-    # CORS settings
-    cors_origins: List[str] = ["http://localhost:3000", "http://localhost:3001"]
+    # CORS settings - Updated for frontend integration
+    cors_origins: List[str] = [
+        "http://localhost:3000", 
+        "http://localhost:3001",
+        "http://frontend:3000",  # Docker container name
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001"
+    ]
     
     class Config:
         env_file = ".env"

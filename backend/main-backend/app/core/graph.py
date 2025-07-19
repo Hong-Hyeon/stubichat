@@ -1,6 +1,6 @@
 from typing import Dict, Any, List, Union
 from langgraph.graph import StateGraph, END
-from app.models.chat import Message, ConversationState, ChatRequest, MCPToolCall
+from app.models.chat import Message, ConversationState, ChatRequest, MCPToolCall, MessageRole
 from app.utils.logger import get_logger
 from datetime import datetime
 import asyncio
@@ -49,7 +49,7 @@ def ensure_conversation_state(state: Union[Dict[str, Any], ConversationState]) -
     for msg_dict in state.get("messages", []):
         if isinstance(msg_dict, dict):
             messages.append(Message(
-                role=Message.role.field.type_.__args__[0](msg_dict["role"]),  # Get MessageRole enum
+                role=MessageRole(msg_dict["role"]),  # Use MessageRole enum directly
                 content=msg_dict["content"],
                 timestamp=msg_dict.get("timestamp")
             ))
@@ -398,7 +398,7 @@ async def call_llm_agent(state: Union[Dict[str, Any], ConversationState]) -> Dic
         # Create assistant message from response
         assistant_message = Message(
             role="assistant",
-            content=llm_response.response,
+            content=llm_response["response"],  # Access as dictionary
             timestamp=datetime.utcnow()
         )
         
@@ -407,9 +407,9 @@ async def call_llm_agent(state: Union[Dict[str, Any], ConversationState]) -> Dic
         
         # Add LLM response metadata
         conv_state.metadata["llm_response_received"] = True
-        conv_state.metadata["llm_model"] = llm_response.model
-        conv_state.metadata["llm_usage"] = llm_response.usage
-        conv_state.metadata["llm_finish_reason"] = llm_response.finish_reason
+        conv_state.metadata["llm_model"] = llm_response.get("model")
+        conv_state.metadata["llm_usage"] = llm_response.get("usage")
+        conv_state.metadata["llm_finish_reason"] = llm_response.get("finish_reason")
         
         logger.info("LLM agent called successfully")
         

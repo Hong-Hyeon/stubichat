@@ -55,12 +55,14 @@ async def chat(
             state_dict = {
                 "messages": state.messages,
                 "metadata": state.metadata,
-                "session_id": state.session_id
+                "session_id": state.session_id,
+                "mcp_tools_needed": state.mcp_tools_needed,
+                "mcp_tool_calls": state.mcp_tool_calls,
+                "mcp_tools_available": state.mcp_tools_available
             }
             final_state = await conversation_graph.ainvoke(state_dict)
         
         # Extract the last assistant message as response
-        # final_state is now a dictionary, not a ConversationState object
         messages = final_state.get("messages", [])
         if not messages:
             raise HTTPException(status_code=500, detail="No messages in final state from LangGraph workflow")
@@ -72,18 +74,30 @@ async def chat(
         
         last_assistant_message = assistant_messages[-1]
         
-        # Create response
+        # Extract MCP tool metadata from final state
+        metadata = final_state.get("metadata", {})
+        mcp_tools_used = metadata.get("mcp_tools_used", [])
+        mcp_tools_failed = metadata.get("mcp_tools_failed", [])
+        
+        # Create response with MCP tool metadata
         response = ChatResponse(
             response=last_assistant_message.get("content", ""),
             model=request.model,
-            usage=final_state.get("metadata", {}).get("usage"),
-            finish_reason="stop"
+            usage=metadata.get("llm_usage"),
+            finish_reason="stop",
+            metadata=metadata,
+            mcp_tools_used=mcp_tools_used if mcp_tools_used else None,
+            mcp_tools_failed=mcp_tools_failed if mcp_tools_failed else None
         )
         
         duration = (datetime.now() - start_time).total_seconds()
         log_request_info(logger, http_request.method, http_request.url.path, 200, duration)
         
         logger.info(f"Chat request processed successfully. Response length: {len(response.response)}")
+        if mcp_tools_used:
+            logger.info(f"MCP tools used: {mcp_tools_used}")
+        if mcp_tools_failed:
+            logger.warning(f"MCP tools failed: {mcp_tools_failed}")
         
         return response
         

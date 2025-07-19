@@ -1,9 +1,9 @@
-from typing import Dict, Any, List, Annotated
+from typing import Dict, Any, List, Union
 from langgraph.graph import StateGraph, END
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from app.models.chat import Message, ConversationState, ChatRequest
+from app.models.chat import Message, ConversationState, ChatRequest, MCPToolCall
 from app.utils.logger import get_logger
 from datetime import datetime
+import asyncio
 
 
 logger = get_logger("conversation_graph")
@@ -34,22 +34,70 @@ def serialize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
     return serialized
 
 
+def serialize_mcp_tool_calls(tool_calls: List[MCPToolCall]) -> List[Dict[str, Any]]:
+    """Serialize MCP tool calls to ensure JSON compatibility."""
+    return [tool_call.model_dump() for tool_call in tool_calls]
+
+
+def ensure_conversation_state(state: Union[Dict[str, Any], ConversationState]) -> ConversationState:
+    """Ensure state is a ConversationState object, converting from dict if needed."""
+    if isinstance(state, ConversationState):
+        return state
+    
+    # Convert dict to ConversationState
+    messages = []
+    for msg_dict in state.get("messages", []):
+        if isinstance(msg_dict, dict):
+            messages.append(Message(
+                role=Message.role.field.type_.__args__[0](msg_dict["role"]),  # Get MessageRole enum
+                content=msg_dict["content"],
+                timestamp=msg_dict.get("timestamp")
+            ))
+        else:
+            messages.append(msg_dict)
+    
+    return ConversationState(
+        messages=messages,
+        metadata=state.get("metadata", {}),
+        session_id=state.get("session_id"),
+        mcp_tools_needed=state.get("mcp_tools_needed", []),
+        mcp_tool_calls=state.get("mcp_tool_calls", []),
+        mcp_tools_available=state.get("mcp_tools_available", [])
+    )
+
+
 def create_conversation_graph():
-    """Create a LangGraph workflow for conversation management."""
+    """Create a LangGraph workflow for conversation management with MCP tool support."""
     
     # Define the state schema
     workflow = StateGraph(ConversationState)
     
     # Add nodes
     workflow.add_node("validate_input", validate_user_input)
+    workflow.add_node("load_mcp_tools", load_mcp_tools)
+    workflow.add_node("analyze_user_intent", analyze_user_intent)
+    workflow.add_node("call_mcp_tools", call_mcp_tools)
     workflow.add_node("prepare_llm_request", prepare_llm_request)
     workflow.add_node("call_llm_agent", call_llm_agent)
     workflow.add_node("process_llm_response", process_llm_response)
     workflow.add_node("format_output", format_conversation_output)
     
-    # Define the workflow
+    # Define the workflow with conditional routing
     workflow.set_entry_point("validate_input")
-    workflow.add_edge("validate_input", "prepare_llm_request")
+    workflow.add_edge("validate_input", "load_mcp_tools")
+    workflow.add_edge("load_mcp_tools", "analyze_user_intent")
+    
+    # Conditional routing based on whether tools are needed
+    workflow.add_conditional_edges(
+        "analyze_user_intent",
+        route_based_on_tools_needed,
+        {
+            "tools_needed": "call_mcp_tools",
+            "no_tools": "prepare_llm_request"
+        }
+    )
+    
+    workflow.add_edge("call_mcp_tools", "prepare_llm_request")
     workflow.add_edge("prepare_llm_request", "call_llm_agent")
     workflow.add_edge("call_llm_agent", "process_llm_response")
     workflow.add_edge("process_llm_response", "format_output")
@@ -58,196 +106,394 @@ def create_conversation_graph():
     return workflow.compile()
 
 
-async def validate_user_input(state: ConversationState) -> Dict[str, Any]:
+def route_based_on_tools_needed(state: Union[Dict[str, Any], ConversationState]) -> str:
+    """Route to next node based on whether MCP tools are needed."""
+    conv_state = ensure_conversation_state(state)
+    
+    if conv_state.mcp_tools_needed:
+        logger.info(f"Routing to tools_needed: {conv_state.mcp_tools_needed}")
+        return "tools_needed"
+    else:
+        logger.info("Routing to no_tools - proceeding directly to LLM")
+        return "no_tools"
+
+
+async def validate_user_input(state: Union[Dict[str, Any], ConversationState]) -> Dict[str, Any]:
     """Validate user input and ensure proper message format."""
     logger.info("Validating user input")
     
+    conv_state = ensure_conversation_state(state)
+    
     # Ensure we have messages
-    if not state.messages:
+    if not conv_state.messages:
         raise ValueError("No messages provided in conversation state")
     
     # Validate the last message is from user
-    last_message = state.messages[-1]
+    last_message = conv_state.messages[-1]
     if last_message.role.value != "user":
         raise ValueError("Last message must be from user")
     
     # Add validation metadata
-    state.metadata["input_validated"] = True
-    state.metadata["user_message_count"] = len([m for m in state.messages if m.role.value == "user"])
-    state.metadata["assistant_message_count"] = len([m for m in state.messages if m.role.value == "assistant"])
+    conv_state.metadata["input_validated"] = True
+    conv_state.metadata["user_message_count"] = len([m for m in conv_state.messages if m.role.value == "user"])
+    conv_state.metadata["assistant_message_count"] = len([m for m in conv_state.messages if m.role.value == "assistant"])
     
-    logger.info(f"Input validated. User messages: {state.metadata['user_message_count']}, Assistant messages: {state.metadata['assistant_message_count']}")
+    logger.info(f"Input validated. User messages: {conv_state.metadata['user_message_count']}, Assistant messages: {conv_state.metadata['assistant_message_count']}")
     
     return {
-        "messages": serialize_messages(state.messages),
-        "metadata": serialize_metadata(state.metadata),
-        "session_id": state.session_id
+        "messages": serialize_messages(conv_state.messages),
+        "metadata": serialize_metadata(conv_state.metadata),
+        "session_id": conv_state.session_id,
+        "mcp_tools_needed": conv_state.mcp_tools_needed,
+        "mcp_tool_calls": serialize_mcp_tool_calls(conv_state.mcp_tool_calls),
+        "mcp_tools_available": conv_state.mcp_tools_available
     }
 
 
-async def prepare_llm_request(state: ConversationState) -> Dict[str, Any]:
-    """Prepare the request for the LLM agent service."""
-    logger.info("Preparing LLM request")
+async def load_mcp_tools(state: Union[Dict[str, Any], ConversationState]) -> Dict[str, Any]:
+    """Load available MCP tools from the MCP server."""
+    logger.info("Loading available MCP tools")
     
-    # Create chat request for LLM agent
-    # Use the last few messages for context (limit to prevent token overflow)
-    context_messages = state.messages[-10:]  # Last 10 messages for context
-    
-    llm_request = ChatRequest(
-        messages=context_messages,
-        stream=False,  # We'll handle streaming separately
-        temperature=0.7,
-        max_tokens=1000,
-        model="gpt-4"
-    )
-    
-    # Store the request in metadata (serialize to avoid datetime issues)
-    request_dict = llm_request.model_dump()
-    # Convert any datetime objects to ISO strings
-    for msg in request_dict.get("messages", []):
-        if "timestamp" in msg and msg["timestamp"]:
-            if hasattr(msg["timestamp"], "isoformat"):
-                msg["timestamp"] = msg["timestamp"].isoformat()
-    state.metadata["llm_request"] = request_dict
-    state.metadata["request_prepared"] = True
-    
-    logger.info(f"LLM request prepared with {len(context_messages)} context messages")
-    
-    return {
-        "messages": serialize_messages(state.messages),
-        "metadata": serialize_metadata(state.metadata),
-        "session_id": state.session_id
-    }
-
-
-async def call_llm_agent(state: ConversationState) -> Dict[str, Any]:
-    """Call the LLM agent service to generate a response."""
-    logger.info("Calling LLM agent service")
+    conv_state = ensure_conversation_state(state)
     
     try:
-        # Get the prepared request
-        llm_request_data = state.metadata.get("llm_request")
-        if not llm_request_data:
-            raise ValueError("LLM request not prepared")
+        from app.services.mcp_client import MCPClient
+        mcp_client = MCPClient()
         
-        # Convert timestamp strings back to datetime objects for ChatRequest
-        for msg in llm_request_data.get("messages", []):
-            if "timestamp" in msg and msg["timestamp"] and isinstance(msg["timestamp"], str):
-                try:
-                    from datetime import datetime
-                    msg["timestamp"] = datetime.fromisoformat(msg["timestamp"])
-                except ValueError:
-                    msg["timestamp"] = None
+        # Get available tools
+        tools_data = await mcp_client.list_tools()
+        conv_state.mcp_tools_available = tools_data.get("tools", [])
         
-        llm_request = ChatRequest(**llm_request_data)
+        logger.info(f"Loaded {len(conv_state.mcp_tools_available)} MCP tools")
         
-        # Import LLM client here to avoid circular imports
+        # Log each tool
+        for tool in conv_state.mcp_tools_available:
+            logger.info(f"Tool: {tool.get('name', 'unknown')} - {tool.get('description', 'no description')}")
+        
+    except Exception as e:
+        logger.error(f"Failed to load MCP tools: {str(e)}")
+        conv_state.mcp_tools_available = []
+    
+    return {
+        "messages": serialize_messages(conv_state.messages),
+        "metadata": serialize_metadata(conv_state.metadata),
+        "session_id": conv_state.session_id,
+        "mcp_tools_needed": conv_state.mcp_tools_needed,
+        "mcp_tool_calls": serialize_mcp_tool_calls(conv_state.mcp_tool_calls),
+        "mcp_tools_available": conv_state.mcp_tools_available
+    }
+
+
+async def analyze_user_intent(state: Union[Dict[str, Any], ConversationState]) -> Dict[str, Any]:
+    """Analyze user intent to determine if MCP tools are needed."""
+    logger.info("Analyzing user intent for MCP tool requirements")
+    
+    conv_state = ensure_conversation_state(state)
+    
+    try:
+        # Get the last user message
+        last_message = conv_state.messages[-1]
+        user_content = last_message.content.lower()
+        logger.info(f"User content: '{user_content}'")
+        
+        # Get available tool names
+        available_tools = [tool.get("name", "") for tool in conv_state.mcp_tools_available]
+        logger.info(f"Available tools: {available_tools}")
+        
+        # Simple intent analysis - in a real system, this would use an LLM
+        # For now, we'll use keyword matching
+        tools_needed = []
+        
+        # Check for echo tool usage
+        if "echo" in available_tools and any(keyword in user_content for keyword in ["echo", "repeat", "say back"]):
+            tools_needed.append("echo")
+            logger.info(f"Echo tool triggered by keywords in: '{user_content}'")
+        else:
+            logger.info(f"No echo tool trigger found in: '{user_content}'")
+        
+        # Add more tool detection logic here as more tools are added
+        
+        conv_state.mcp_tools_needed = tools_needed
+        
+        if tools_needed:
+            logger.info(f"Tools needed: {tools_needed}")
+        else:
+            logger.info("No tools needed - proceeding directly to LLM")
+        
+    except Exception as e:
+        logger.error(f"Failed to analyze user intent: {str(e)}")
+        conv_state.mcp_tools_needed = []
+    
+    return {
+        "messages": serialize_messages(conv_state.messages),
+        "metadata": serialize_metadata(conv_state.metadata),
+        "session_id": conv_state.session_id,
+        "mcp_tools_needed": conv_state.mcp_tools_needed,
+        "mcp_tool_calls": serialize_mcp_tool_calls(conv_state.mcp_tool_calls),
+        "mcp_tools_available": conv_state.mcp_tools_available
+    }
+
+
+async def call_mcp_tools(state: Union[Dict[str, Any], ConversationState]) -> Dict[str, Any]:
+    """Call MCP tools in parallel and collect results."""
+    conv_state = ensure_conversation_state(state)
+    
+    logger.info(f"Calling MCP tools: {conv_state.mcp_tools_needed}")
+    
+    try:
+        from app.services.mcp_client import MCPClient
+        mcp_client = MCPClient()
+        
+        # Prepare tool calls
+        tool_calls = []
+        for tool_name in conv_state.mcp_tools_needed:
+            # Find tool info
+            tool_info = next((tool for tool in conv_state.mcp_tools_available if tool.get("name") == tool_name), None)
+            
+            if tool_info:
+                # Prepare input data based on tool type
+                input_data = prepare_tool_input(tool_name, conv_state.messages[-1].content)
+                
+                tool_call = MCPToolCall(
+                    tool_name=tool_name,
+                    input_data=input_data
+                )
+                tool_calls.append(tool_call)
+        
+        # Call tools in parallel
+        async def call_single_tool(tool_call: MCPToolCall) -> MCPToolCall:
+            try:
+                result = await mcp_client.call_tool(tool_call.tool_name, tool_call.input_data)
+                tool_call.result = result
+                tool_call.success = True
+                logger.info(f"Tool {tool_call.tool_name} called successfully")
+            except Exception as e:
+                tool_call.error = str(e)
+                tool_call.success = False
+                logger.error(f"Tool {tool_call.tool_name} failed: {str(e)}")
+            return tool_call
+        
+        # Execute all tool calls in parallel
+        if tool_calls:
+            results = await asyncio.gather(*[call_single_tool(tool_call) for tool_call in tool_calls])
+            conv_state.mcp_tool_calls = results
+            logger.info(f"Completed {len(results)} tool calls")
+        
+    except Exception as e:
+        logger.error(f"Failed to call MCP tools: {str(e)}")
+        conv_state.mcp_tool_calls = []
+    
+    return {
+        "messages": serialize_messages(conv_state.messages),
+        "metadata": serialize_metadata(conv_state.metadata),
+        "session_id": conv_state.session_id,
+        "mcp_tools_needed": conv_state.mcp_tools_needed,
+        "mcp_tool_calls": serialize_mcp_tool_calls(conv_state.mcp_tool_calls),
+        "mcp_tools_available": conv_state.mcp_tools_available
+    }
+
+
+def prepare_tool_input(tool_name: str, user_content: str) -> Dict[str, Any]:
+    """Prepare input data for MCP tools based on tool type and user content."""
+    if tool_name == "echo":
+        # For echo tool, extract the text to echo
+        # Remove trigger words and clean up
+        text_to_echo = user_content
+        for trigger in ["echo", "repeat", "say back"]:
+            if trigger in text_to_echo.lower():
+                text_to_echo = text_to_echo.lower().replace(trigger, "").strip()
+                break
+        
+        return {"message": text_to_echo, "prefix": "Echo: "}
+    
+    # Default case - pass the full user content
+    return {"input": user_content}
+
+
+async def prepare_llm_request(state: Union[Dict[str, Any], ConversationState]) -> Dict[str, Any]:
+    """Prepare the request for the LLM agent, including MCP tool results if available."""
+    logger.info("Preparing LLM request")
+    
+    conv_state = ensure_conversation_state(state)
+    
+    try:
+        # Get the last user message
+        last_user_message = conv_state.messages[-1]
+        
+        # Prepare context for LLM
+        context_parts = []
+        
+        # Add user's original message
+        context_parts.append(f"User: {last_user_message.content}")
+        
+        # Add MCP tool results if available
+        if conv_state.mcp_tool_calls:
+            context_parts.append("\nMCP Tool Results:")
+            for tool_call in conv_state.mcp_tool_calls:
+                if tool_call.success and tool_call.result:
+                    context_parts.append(f"- {tool_call.tool_name}: {tool_call.result}")
+                else:
+                    context_parts.append(f"- {tool_call.tool_name}: Failed - {tool_call.error}")
+        
+        # Combine context
+        enhanced_content = "\n".join(context_parts)
+        
+        # Create enhanced message for LLM
+        enhanced_message = Message(
+            role=conv_state.messages[-1].role,
+            content=enhanced_content,
+            timestamp=datetime.utcnow()
+        )
+        
+        # Update messages with enhanced content
+        enhanced_messages = conv_state.messages[:-1] + [enhanced_message]
+        conv_state.messages = enhanced_messages
+        
+        # Add metadata about MCP tool usage
+        if conv_state.mcp_tool_calls:
+            successful_tools = [tc.tool_name for tc in conv_state.mcp_tool_calls if tc.success]
+            failed_tools = [tc.tool_name for tc in conv_state.mcp_tool_calls if not tc.success]
+            
+            conv_state.metadata["mcp_tools_used"] = successful_tools
+            conv_state.metadata["mcp_tools_failed"] = failed_tools
+            conv_state.metadata["mcp_tools_called"] = True
+        
+        logger.info("LLM request prepared successfully")
+        
+    except Exception as e:
+        logger.error(f"Failed to prepare LLM request: {str(e)}")
+    
+    return {
+        "messages": serialize_messages(conv_state.messages),
+        "metadata": serialize_metadata(conv_state.metadata),
+        "session_id": conv_state.session_id,
+        "mcp_tools_needed": conv_state.mcp_tools_needed,
+        "mcp_tool_calls": serialize_mcp_tool_calls(conv_state.mcp_tool_calls),
+        "mcp_tools_available": conv_state.mcp_tools_available
+    }
+
+
+async def call_llm_agent(state: Union[Dict[str, Any], ConversationState]) -> Dict[str, Any]:
+    """Call the LLM agent service to generate a response."""
+    logger.info("Calling LLM agent")
+    
+    conv_state = ensure_conversation_state(state)
+    
+    try:
         from app.services.llm_client import LLMClient
         llm_client = LLMClient()
         
-        # Call LLM agent service
-        response = await llm_client.generate_text(llm_request)
+        # Create request for LLM agent
+        llm_request = ChatRequest(
+            messages=conv_state.messages,
+            stream=False,  # We'll handle streaming separately
+            temperature=conv_state.metadata.get("temperature", 0.7),
+            max_tokens=conv_state.metadata.get("max_tokens"),
+            model=conv_state.metadata.get("model", "gpt-4")
+        )
         
-        # Store the response in metadata
-        state.metadata["llm_response"] = response
-        state.metadata["llm_call_successful"] = True
+        # Call LLM agent
+        llm_response = await llm_client.generate_text(llm_request)
         
-        logger.info("LLM agent service called successfully")
+        # Create assistant message from response
+        assistant_message = Message(
+            role="assistant",
+            content=llm_response.response,
+            timestamp=datetime.utcnow()
+        )
+        
+        # Add assistant message to conversation
+        conv_state.messages.append(assistant_message)
+        
+        # Add LLM response metadata
+        conv_state.metadata["llm_response_received"] = True
+        conv_state.metadata["llm_model"] = llm_response.model
+        conv_state.metadata["llm_usage"] = llm_response.usage
+        conv_state.metadata["llm_finish_reason"] = llm_response.finish_reason
+        
+        logger.info("LLM agent called successfully")
         
     except Exception as e:
-        logger.error(f"Failed to call LLM agent service: {str(e)}")
-        state.metadata["llm_call_successful"] = False
-        state.metadata["llm_error"] = str(e)
-        raise
-    
-    return {
-        "messages": serialize_messages(state.messages),
-        "metadata": serialize_metadata(state.metadata),
-        "session_id": state.session_id
-    }
-
-
-async def process_llm_response(state: ConversationState) -> Dict[str, Any]:
-    """Process the LLM response and add it to the conversation."""
-    logger.info("Processing LLM response")
-    
-    # Check if LLM call was successful
-    if not state.metadata.get("llm_call_successful", False):
-        # Add error message
+        logger.error(f"Failed to call LLM agent: {str(e)}")
+        # Create error message
         error_message = Message(
             role="assistant",
-            content="I apologize, but I encountered an error while processing your request. Please try again.",
-            timestamp=None
+            content=f"I apologize, but I encountered an error while processing your request: {str(e)}",
+            timestamp=datetime.utcnow()
         )
-        state.messages.append(error_message)
-        state.metadata["error_occurred"] = True
-        return {
-            "messages": serialize_messages(state.messages),
-            "metadata": serialize_metadata(state.metadata),
-            "session_id": state.session_id
-        }
-    
-    # Get the LLM response
-    llm_response = state.metadata.get("llm_response", {})
-    
-    # Extract response content
-    response_content = llm_response.get("response", "")
-    if not response_content:
-        response_content = "I apologize, but I couldn't generate a response. Please try again."
-    
-    # Create assistant message
-    assistant_message = Message(
-        role="assistant",
-        content=response_content,
-        timestamp=None  # Will be set by default_factory
-    )
-    
-    # Add to conversation
-    state.messages.append(assistant_message)
-    
-    # Update metadata
-    state.metadata["response_processed"] = True
-    state.metadata["response_length"] = len(response_content)
-    state.metadata["model_used"] = llm_response.get("model", "unknown")
-    
-    logger.info(f"LLM response processed. Response length: {len(response_content)} characters")
+        conv_state.messages.append(error_message)
     
     return {
-        "messages": serialize_messages(state.messages),
-        "metadata": serialize_metadata(state.metadata),
-        "session_id": state.session_id
+        "messages": serialize_messages(conv_state.messages),
+        "metadata": serialize_metadata(conv_state.metadata),
+        "session_id": conv_state.session_id,
+        "mcp_tools_needed": conv_state.mcp_tools_needed,
+        "mcp_tool_calls": serialize_mcp_tool_calls(conv_state.mcp_tool_calls),
+        "mcp_tools_available": conv_state.mcp_tools_available
     }
 
 
-async def format_conversation_output(state: ConversationState) -> Dict[str, Any]:
-    """Format the final conversation output and clean up metadata."""
-    logger.info("Formatting conversation output")
+async def process_llm_response(state: Union[Dict[str, Any], ConversationState]) -> Dict[str, Any]:
+    """Process the LLM response and prepare for output formatting."""
+    logger.info("Processing LLM response")
     
-    # Clean up temporary metadata
-    cleanup_keys = [
-        "llm_request", "llm_response", "input_validated", 
-        "request_prepared", "llm_call_successful", "response_processed"
-    ]
+    conv_state = ensure_conversation_state(state)
     
-    for key in cleanup_keys:
-        if key in state.metadata:
-            del state.metadata[key]
-    
-    # Add final conversation metadata
-    state.metadata["conversation_length"] = len(state.messages)
-    if state.messages:
-        last_timestamp = state.messages[-1].timestamp
-        state.metadata["last_updated"] = last_timestamp.isoformat() if last_timestamp else None
-    else:
-        state.metadata["last_updated"] = None
-    state.metadata["workflow_completed"] = True
-    
-    logger.info(f"Conversation output formatted. Total messages: {len(state.messages)}")
+    try:
+        # Get the last assistant message
+        last_assistant_message = conv_state.messages[-1]
+        
+        # Add processing metadata
+        conv_state.metadata["response_processed"] = True
+        conv_state.metadata["response_length"] = len(last_assistant_message.content)
+        conv_state.metadata["final_response"] = last_assistant_message.content
+        
+        logger.info("LLM response processed successfully")
+        
+    except Exception as e:
+        logger.error(f"Failed to process LLM response: {str(e)}")
     
     return {
-        "messages": serialize_messages(state.messages),
-        "metadata": serialize_metadata(state.metadata),
-        "session_id": state.session_id
+        "messages": serialize_messages(conv_state.messages),
+        "metadata": serialize_metadata(conv_state.metadata),
+        "session_id": conv_state.session_id,
+        "mcp_tools_needed": conv_state.mcp_tools_needed,
+        "mcp_tool_calls": serialize_mcp_tool_calls(conv_state.mcp_tool_calls),
+        "mcp_tools_available": conv_state.mcp_tools_available
+    }
+
+
+async def format_conversation_output(state: Union[Dict[str, Any], ConversationState]) -> Dict[str, Any]:
+    """Format the final conversation output."""
+    logger.info("Formatting conversation output")
+    
+    conv_state = ensure_conversation_state(state)
+    
+    try:
+        # Add final formatting metadata
+        conv_state.metadata["output_formatted"] = True
+        conv_state.metadata["conversation_complete"] = True
+        
+        # Ensure MCP tool metadata is included
+        if conv_state.mcp_tool_calls:
+            successful_tools = [tc.tool_name for tc in conv_state.mcp_tool_calls if tc.success]
+            failed_tools = [tc.tool_name for tc in conv_state.mcp_tool_calls if not tc.success]
+            
+            conv_state.metadata["mcp_tools_used"] = successful_tools
+            conv_state.metadata["mcp_tools_failed"] = failed_tools
+        
+        logger.info("Conversation output formatted successfully")
+        
+    except Exception as e:
+        logger.error(f"Failed to format conversation output: {str(e)}")
+    
+    return {
+        "messages": serialize_messages(conv_state.messages),
+        "metadata": serialize_metadata(conv_state.metadata),
+        "session_id": conv_state.session_id,
+        "mcp_tools_needed": conv_state.mcp_tools_needed,
+        "mcp_tool_calls": serialize_mcp_tool_calls(conv_state.mcp_tool_calls),
+        "mcp_tools_available": conv_state.mcp_tools_available
     }
 
 

@@ -16,6 +16,33 @@ class Message(BaseModel):
     timestamp: Optional[datetime] = Field(default_factory=datetime.utcnow)
 
 
+# 매우 단순한 요청 모델들
+class SimplePromptRequest(BaseModel):
+    """매우 단순한 프롬프트 요청 - 사용자 메시지만 포함"""
+    prompt: str = Field(..., description="사용자의 메시지")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "prompt": "Hello, how are you?"
+            }
+        }
+
+
+class SimplePromptResponse(BaseModel):
+    """매우 단순한 응답"""
+    response: str = Field(..., description="AI의 응답")
+    success: bool = Field(default=True, description="요청 성공 여부")
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SimpleHealthResponse(BaseModel):
+    """단순한 헬스 체크 응답"""
+    status: str = Field(..., description="상태")
+    message: str = Field(..., description="메시지")
+
+
+# 기존 모델들 (하위 호환성을 위해 유지)
 class FrontendMessage(BaseModel):
     """Frontend message format from ai-chatbot"""
     id: str
@@ -31,6 +58,39 @@ class FrontendChatRequest(BaseModel):
     selectedChatModel: str = "chat-model"
     selectedVisibilityType: str = "private"
     user: Optional[Dict[str, Any]] = None
+
+
+class SimpleChatRequest(BaseModel):
+    """단순화된 채팅 요청 - 사용자 프롬프트만 포함"""
+    prompt: str = Field(..., description="사용자의 메시지")
+    model: str = Field(default="chat-model", description="사용할 모델")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "prompt": "Hello, how are you?",
+                "model": "chat-model"
+            }
+        }
+
+
+class SimpleChatResponse(BaseModel):
+    """단순화된 채팅 응답"""
+    response: str = Field(..., description="AI의 응답")
+    model: str = Field(..., description="사용된 모델")
+    success: bool = Field(default=True, description="요청 성공 여부")
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    metadata: Optional[Dict[str, Any]] = Field(default=None, description="추가 메타데이터")
+
+
+class HealthTestResponse(BaseModel):
+    """헬스 체크 테스트 응답"""
+    status: str = Field(..., description="전체 상태")
+    message: str = Field(..., description="테스트 메시지")
+    model_response: str = Field(..., description="모델 테스트 응답")
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    services: Dict[str, str] = Field(default_factory=dict, description="서비스 상태")
+    version: str = Field(default="1.0.0", description="앱 버전")
 
 
 class ChatRequest(BaseModel):

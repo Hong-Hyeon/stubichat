@@ -7,7 +7,9 @@ from datetime import datetime
 
 from app.models.chat import (
     ChatRequest, ChatResponse, ConversationState, HealthResponse,
-    FrontendChatRequest, FrontendMessage, Message, MessageRole
+    FrontendChatRequest, FrontendMessage, Message, MessageRole,
+    SimpleChatRequest, SimpleChatResponse, HealthTestResponse,
+    SimplePromptRequest, SimplePromptResponse, SimpleHealthResponse
 )
 from app.factory.service_factory import get_service_factory, ServiceFactory
 from app.utils.logger import get_logger, log_performance, log_request_info
@@ -27,23 +29,6 @@ def get_conversation_graph(service_factory: ServiceFactory = Depends(get_service
     return service_factory.conversation_graph
 
 
-def convert_frontend_message_to_backend(frontend_msg: FrontendMessage) -> Message:
-    """Convert frontend message format to backend format."""
-    # Extract content from parts
-    content = ""
-    for part in frontend_msg.parts:
-        if isinstance(part, dict) and "text" in part:
-            content += part["text"]
-        elif isinstance(part, str):
-            content += part
-    
-    return Message(
-        role=MessageRole(frontend_msg.role),
-        content=content,
-        timestamp=datetime.utcnow()
-    )
-
-
 def map_model_name(frontend_model: str) -> str:
     """Map frontend model names to actual OpenAI model names."""
     model_mapping = {
@@ -58,43 +43,56 @@ def map_model_name(frontend_model: str) -> str:
     return model_mapping.get(frontend_model, "gpt-3.5-turbo")
 
 
-@router.post("/", response_model=ChatResponse)
+# 매우 단순한 채팅 엔드포인트 - 사용자 프롬프트만 받음
+@router.post("/", response_model=SimplePromptResponse)
 async def chat(
     http_request: Request,
-    request: FrontendChatRequest = Body(..., embed=True),
     llm_client=Depends(get_llm_client),
     conversation_graph=Depends(get_conversation_graph)
 ):
-    """Process a chat request using LangGraph workflow and return a response."""
+    """매우 단순한 채팅 요청 처리 - 사용자 프롬프트만 받아서 응답"""
     start_time = datetime.now()
     
     try:
-        logger.info(f"Processing frontend chat request for chat ID: {request.id}")
+        # JSON 직접 파싱
+        body = await http_request.json()
+        prompt = body.get("prompt", "")
         
-        # Convert frontend message to backend format
-        backend_message = convert_frontend_message_to_backend(request.message)
+        if not prompt:
+            raise HTTPException(status_code=400, detail="prompt is required")
         
-        # Map frontend model name to actual OpenAI model name
-        actual_model = map_model_name(request.selectedChatModel)
+        logger.info(f"Processing simple chat request with prompt: {prompt[:50]}...")
         
-        # Create conversation state with the single message
+        # 사용자 메시지 생성
+        user_message = Message(
+            role=MessageRole.USER,
+            content=prompt,
+            timestamp=datetime.utcnow()
+        )
+        
+        # 기본 모델 사용 (사용자가 선택할 필요 없음)
+        default_model = "gpt-3.5-turbo"
+        
+        # 세션 ID 생성
+        session_id = str(uuid.uuid4())
+        
+        # 대화 상태 생성
         state = ConversationState(
-            messages=[backend_message],
-            session_id=request.id,
+            messages=[user_message],
+            session_id=session_id,
             metadata={
                 "temperature": 0.7,
                 "max_tokens": 1000,
-                "model": actual_model,  # Use mapped model name
-                "stream": True,
-                "chat_id": request.id,
-                "visibility": request.selectedVisibilityType,
-                "user": request.user
+                "model": default_model,
+                "stream": False,
+                "chat_id": session_id,
+                "visibility": "private",
+                "user": {"id": "simple-user", "type": "guest"}
             }
         )
         
-        # Execute LangGraph workflow
-        with log_performance(logger, "langgraph_conversation_workflow"):
-            # Convert ConversationState to dictionary for LangGraph
+        # LangGraph 워크플로우 실행
+        with log_performance(logger, "simple_langgraph_conversation_workflow"):
             state_dict = {
                 "messages": state.messages,
                 "metadata": state.metadata,
@@ -105,20 +103,19 @@ async def chat(
             }
             final_state = await conversation_graph.ainvoke(state_dict)
         
-        # Extract the last assistant message as response
+        # 응답 추출
         messages = final_state.get("messages", [])
         
         if not messages:
             raise HTTPException(status_code=500, detail="No messages in final state from LangGraph workflow")
         
-        # Find the last assistant message - handle both dict and object formats
+        # 마지막 어시스턴트 메시지 찾기
         assistant_messages = []
         for msg in messages:
             if isinstance(msg, dict):
                 if msg.get("role") == "assistant":
                     assistant_messages.append(msg)
             else:
-                # Handle Message objects
                 if hasattr(msg, 'role') and msg.role == MessageRole.ASSISTANT:
                     assistant_messages.append({
                         "role": "assistant",
@@ -131,78 +128,75 @@ async def chat(
         
         last_assistant_message = assistant_messages[-1]
         
-        # Extract MCP tool metadata from final state
-        metadata = final_state.get("metadata", {})
-        mcp_tools_used = metadata.get("mcp_tools_used", [])
-        mcp_tools_failed = metadata.get("mcp_tools_failed", [])
-        
-        # Create response with MCP tool metadata
-        response = ChatResponse(
+        # 응답 생성
+        response = SimplePromptResponse(
             response=last_assistant_message.get("content", ""),
-            model=request.selectedChatModel,
-            usage=metadata.get("llm_usage"),
-            finish_reason="stop",
-            metadata=metadata,
-            mcp_tools_used=mcp_tools_used if mcp_tools_used else None,
-            mcp_tools_failed=mcp_tools_failed if mcp_tools_failed else None
+            success=True
         )
         
         duration = (datetime.now() - start_time).total_seconds()
         log_request_info(logger, http_request.method, http_request.url.path, 200, duration)
         
-        logger.info(f"Chat request processed successfully. Response length: {len(response.response)}")
-        if mcp_tools_used:
-            logger.info(f"MCP tools used: {mcp_tools_used}")
-        if mcp_tools_failed:
-            logger.warning(f"MCP tools failed: {mcp_tools_failed}")
+        logger.info(f"Simple chat request processed successfully. Response length: {len(response.response)}")
         
         return response
         
     except Exception as e:
-        logger.error(f"Chat request failed: {str(e)}")
+        logger.error(f"Simple chat request failed: {str(e)}")
         duration = (datetime.now() - start_time).total_seconds()
         log_request_info(logger, http_request.method, http_request.url.path, 500, duration)
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# 매우 단순한 스트리밍 엔드포인트 - 사용자 프롬프트만 받음
 @router.post("/stream")
 async def chat_stream(
     http_request: Request,
-    request: FrontendChatRequest = Body(..., embed=True),
     llm_client=Depends(get_llm_client)
 ):
-    """Process a chat request and stream the response directly from LLM agent."""
+    """매우 단순한 스트리밍 채팅 요청 처리 - 사용자 프롬프트만 받음"""
     start_time = datetime.now()
     
     try:
-        logger.info(f"Processing streaming chat request for chat ID: {request.id}")
+        # JSON 직접 파싱
+        body = await http_request.json()
+        prompt = body.get("prompt", "")
         
-        # Convert frontend message to backend format
-        backend_message = convert_frontend_message_to_backend(request.message)
+        if not prompt:
+            raise HTTPException(status_code=400, detail="prompt is required")
         
-        # Map frontend model name to actual OpenAI model name
-        actual_model = map_model_name(request.selectedChatModel)
+        logger.info(f"Processing simple streaming chat request with prompt: {prompt[:50]}...")
         
-        # Create backend request format
+        # 사용자 메시지 생성
+        user_message = Message(
+            role=MessageRole.USER,
+            content=prompt,
+            timestamp=datetime.utcnow()
+        )
+        
+        # 기본 모델 사용 (사용자가 선택할 필요 없음)
+        default_model = "gpt-3.5-turbo"
+        
+        # 백엔드 요청 형식 생성
         backend_request = ChatRequest(
-            messages=[backend_message],
+            messages=[user_message],
             stream=True,
             temperature=0.7,
             max_tokens=1000,
-            model=actual_model  # Use mapped model name
+            model=default_model
         )
         
         async def generate_stream() -> AsyncGenerator[str, None]:
             try:
-                # Stream directly from LLM agent service
+                # LLM 에이전트 서비스에서 직접 스트리밍
                 async for chunk in llm_client.stream_text(backend_request):
                     yield f"data: {chunk.model_dump_json()}\n\n"
                 
-                # Send end marker
+                # 종료 마커
                 yield "data: [DONE]\n\n"
                 
             except Exception as e:
-                logger.error(f"Streaming failed: {str(e)}")
+                logger.error(f"Simple streaming failed: {str(e)}")
                 error_chunk = {
                     "content": "",
                     "finish_reason": "error",
@@ -225,38 +219,59 @@ async def chat_stream(
         )
         
     except Exception as e:
-        logger.error(f"Streaming chat request failed: {str(e)}")
+        logger.error(f"Simple streaming chat request failed: {str(e)}")
         duration = (datetime.now() - start_time).total_seconds()
         log_request_info(logger, http_request.method, http_request.url.path, 500, duration)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/health", response_model=HealthResponse)
-async def health_check(llm_client=Depends(get_llm_client)):
-    """Health check endpoint."""
+# 매우 단순한 헬스 체크 엔드포인트
+@router.get("/health", response_model=SimpleHealthResponse)
+async def health_check(
+    llm_client=Depends(get_llm_client),
+    conversation_graph=Depends(get_conversation_graph)
+):
+    """매우 단순한 헬스 체크 엔드포인트 - 내부적으로 테스트 프롬프트를 모델에 전송"""
     try:
-        # Check LLM agent service health
-        llm_health = await llm_client.health_check()
+        logger.info("Starting simple health check with model test")
         
-        services_status = {
-            "llm_agent": llm_health.get("status", "unknown")
-        }
+        # LLM 에이전트 서비스 헬스 체크
+        await llm_client.health_check()
         
-        # Determine overall status
-        overall_status = "healthy" if all(
-            status == "healthy" for status in services_status.values()
-        ) else "degraded"
-        
-        return HealthResponse(
-            status=overall_status,
-            services=services_status,
-            version=settings.app_version
+        # 테스트 프롬프트로 모델 응답 확인
+        test_prompt = "Hello, this is a health check. Please respond with 'Health check successful'."
+        test_message = Message(
+            role=MessageRole.USER,
+            content=test_prompt,
+            timestamp=datetime.utcnow()
         )
+        
+        # 간단한 테스트를 위해 직접 LLM 에이전트 호출
+        test_request = ChatRequest(
+            messages=[test_message],
+            stream=False,
+            temperature=0.7,
+            max_tokens=50,
+            model="gpt-3.5-turbo"
+        )
+        
+        try:
+            await llm_client.generate_text(test_request)
+            # 응답이 성공적으로 왔으면 Healthy
+            return SimpleHealthResponse(
+                status="Healthy",
+                message="Health check successful"
+            )
+        except Exception as model_error:
+            logger.warning(f"Model test failed: {str(model_error)}")
+            return SimpleHealthResponse(
+                status="Unhealthy",
+                message="Health check failed"
+            )
         
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
-        return HealthResponse(
-            status="unhealthy",
-            services={"llm_agent": "unhealthy"},
-            version=settings.app_version
+        return SimpleHealthResponse(
+            status="Unhealthy",
+            message="Health check failed"
         ) 

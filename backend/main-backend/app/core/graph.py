@@ -211,6 +211,13 @@ async def analyze_user_intent(state: Union[Dict[str, Any], ConversationState]) -
         else:
             logger.info(f"No echo tool trigger found in: '{user_content}'")
         
+        # Check for web search tool usage
+        if "web_search" in available_tools and any(keyword in user_content for keyword in ["search", "find", "look up", "what is", "who is", "latest news", "current", "recent"]):
+            tools_needed.append("web_search")
+            logger.info(f"Web search tool triggered by keywords in: '{user_content}'")
+        else:
+            logger.info(f"No web search tool trigger found in: '{user_content}'")
+        
         # Add more tool detection logic here as more tools are added
         
         conv_state.mcp_tools_needed = tools_needed
@@ -305,6 +312,28 @@ def prepare_tool_input(tool_name: str, user_content: str) -> Dict[str, Any]:
                 break
         
         return {"message": text_to_echo, "prefix": "Echo: "}
+    
+    elif tool_name == "web_search":
+        # For web search tool, extract the search query
+        # Remove trigger words and clean up
+        search_query = user_content
+        trigger_words = ["search", "find", "look up", "what is", "who is", "latest news", "current", "recent"]
+        
+        for trigger in trigger_words:
+            if trigger in search_query.lower():
+                # Remove the trigger word and clean up
+                search_query = search_query.lower().replace(trigger, "").strip()
+                break
+        
+        # If no trigger word found, use the entire content as query
+        if search_query == user_content:
+            search_query = user_content.strip()
+        
+        return {
+            "query": search_query,
+            "max_results": 5,
+            "search_engine": "duckduckgo"
+        }
     
     # Default case - pass the full user content
     return {"input": user_content}

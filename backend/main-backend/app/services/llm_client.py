@@ -88,12 +88,25 @@ class LLMClient:
                     
                     async for line in response.aiter_lines():
                         if line.strip():
-                            try:
-                                chunk_data = json.loads(line)
-                                yield StreamChunk(**chunk_data)
-                            except json.JSONDecodeError:
-                                self.logger.warning(f"Invalid JSON in stream: {line}")
-                                continue
+                            # Handle Server-Sent Events format
+                            if line.startswith("data: "):
+                                data_content = line[6:]  # Remove "data: " prefix
+                                if data_content.strip() == "[DONE]":
+                                    break
+                                try:
+                                    chunk_data = json.loads(data_content)
+                                    yield StreamChunk(**chunk_data)
+                                except json.JSONDecodeError:
+                                    self.logger.warning(f"Invalid JSON in stream: {data_content}")
+                                    continue
+                            else:
+                                # Try to parse as regular JSON (fallback)
+                                try:
+                                    chunk_data = json.loads(line)
+                                    yield StreamChunk(**chunk_data)
+                                except json.JSONDecodeError:
+                                    self.logger.warning(f"Invalid JSON in stream: {line}")
+                                    continue
                                 
         except httpx.HTTPStatusError as e:
             self.logger.error(f"LLM Agent stream HTTP error: {e.response.status_code}")

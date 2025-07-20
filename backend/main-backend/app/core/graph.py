@@ -79,6 +79,7 @@ def create_conversation_graph():
     workflow.add_node("call_mcp_tools", call_mcp_tools)
     workflow.add_node("prepare_llm_request", prepare_llm_request)
     workflow.add_node("call_llm_agent", call_llm_agent)
+    workflow.add_node("generate_direct_response", generate_direct_response)
     workflow.add_node("process_llm_response", process_llm_response)
     workflow.add_node("format_output", format_conversation_output)
     
@@ -93,13 +94,14 @@ def create_conversation_graph():
         route_based_on_tools_needed,
         {
             "tools_needed": "call_mcp_tools",
-            "no_tools": "prepare_llm_request"
+            "no_tools": "generate_direct_response"
         }
     )
     
     workflow.add_edge("call_mcp_tools", "prepare_llm_request")
     workflow.add_edge("prepare_llm_request", "call_llm_agent")
     workflow.add_edge("call_llm_agent", "process_llm_response")
+    workflow.add_edge("generate_direct_response", "process_llm_response")
     workflow.add_edge("process_llm_response", "format_output")
     workflow.add_edge("format_output", END)
     
@@ -185,51 +187,73 @@ async def load_mcp_tools(state: Union[Dict[str, Any], ConversationState]) -> Dic
 
 
 async def analyze_user_intent(state: Union[Dict[str, Any], ConversationState]) -> Dict[str, Any]:
-    """Analyze user intent to determine if MCP tools are needed."""
-    logger.info("Analyzing user intent for MCP tool requirements")
+    """Analyze user intent using LLM to determine if MCP tools are needed."""
+    logger.info("Analyzing user intent using LLM for MCP tool requirements")
     
     conv_state = ensure_conversation_state(state)
     
     try:
         # Get the last user message
         last_message = conv_state.messages[-1]
-        user_content = last_message.content.lower()
+        user_content = last_message.content
         logger.info(f"User content: '{user_content}'")
         
-        # Get available tool names
-        available_tools = [tool.get("name", "") for tool in conv_state.mcp_tools_available]
-        logger.info(f"Available tools: {available_tools}")
+        # Get available tool names and descriptions
+        available_tools = []
+        for tool in conv_state.mcp_tools_available:
+            available_tools.append({
+                "name": tool.get("name", ""),
+                "description": tool.get("description", "")
+            })
         
-        # Simple intent analysis - in a real system, this would use an LLM
-        # For now, we'll use keyword matching
-        tools_needed = []
+        logger.info(f"Available tools: {[tool['name'] for tool in available_tools]}")
         
-        # Check for echo tool usage
-        if "echo" in available_tools and any(keyword in user_content for keyword in ["echo", "repeat", "say back"]):
-            tools_needed.append("echo")
-            logger.info(f"Echo tool triggered by keywords in: '{user_content}'")
-        else:
-            logger.info(f"No echo tool trigger found in: '{user_content}'")
+        # Create LLM prompt for tool decision
+        tool_decision_prompt = create_tool_decision_prompt(user_content, available_tools)
         
-        # Check for web search tool usage
-        if "web_search" in available_tools and any(keyword in user_content for keyword in ["search", "find", "look up", "what is", "who is", "latest news", "current", "recent"]):
-            tools_needed.append("web_search")
-            logger.info(f"Web search tool triggered by keywords in: '{user_content}'")
-        else:
-            logger.info(f"No web search tool trigger found in: '{user_content}'")
+        # Call LLM to make tool decision
+        from app.services.llm_client import LLMClient
+        llm_client = LLMClient()
         
-        # Add more tool detection logic here as more tools are added
+        # Create temporary message for tool decision
+        decision_message = Message(
+            role=MessageRole.USER,
+            content=tool_decision_prompt,
+            timestamp=datetime.utcnow()
+        )
         
+        # Create request for tool decision
+        decision_request = ChatRequest(
+            messages=[decision_message],
+            stream=False,
+            temperature=0.1,  # Low temperature for consistent decisions
+            max_tokens=500,
+            model=conv_state.metadata.get("model", "gpt-3.5-turbo")
+        )
+        
+        # Get LLM decision
+        decision_response = await llm_client.generate_text(decision_request)
+        llm_decision = decision_response.get("response", "")
+        
+        logger.info(f"LLM tool decision: {llm_decision}")
+        
+        # Parse LLM decision
+        tools_needed = parse_llm_tool_decision(llm_decision, available_tools)
         conv_state.mcp_tools_needed = tools_needed
         
+        # Store decision metadata
+        conv_state.metadata["llm_tool_decision"] = llm_decision
+        conv_state.metadata["llm_tool_analysis"] = True
+        
         if tools_needed:
-            logger.info(f"Tools needed: {tools_needed}")
+            logger.info(f"LLM decided tools needed: {tools_needed}")
         else:
-            logger.info("No tools needed - proceeding directly to LLM")
+            logger.info("LLM decided no tools needed - proceeding directly to response generation")
         
     except Exception as e:
-        logger.error(f"Failed to analyze user intent: {str(e)}")
+        logger.error(f"Failed to analyze user intent with LLM: {str(e)}")
         conv_state.mcp_tools_needed = []
+        conv_state.metadata["llm_tool_analysis_failed"] = True
     
     return {
         "messages": serialize_messages(conv_state.messages),
@@ -239,6 +263,97 @@ async def analyze_user_intent(state: Union[Dict[str, Any], ConversationState]) -
         "mcp_tool_calls": serialize_mcp_tool_calls(conv_state.mcp_tool_calls),
         "mcp_tools_available": conv_state.mcp_tools_available
     }
+
+
+def create_tool_decision_prompt(user_content: str, available_tools: List[Dict[str, str]]) -> str:
+    """Create a prompt for the LLM to decide which tools to use."""
+    
+    tools_description = "\n".join([
+        f"- {tool['name']}: {tool['description']}"
+        for tool in available_tools
+    ])
+    
+    prompt = f"""You are a tool selection assistant. Your job is to analyze the user's request and decide whether any MCP tools should be used.
+
+Available MCP tools:
+{tools_description}
+
+User request: "{user_content}"
+
+Please analyze the user's request and respond with ONLY a JSON object in this exact format:
+
+{{
+  "use_tools": true/false,
+  "tools": ["tool_name1", "tool_name2"] or [],
+  "reasoning": "brief explanation of your decision"
+}}
+
+Rules:
+1. Only use tools if they are clearly needed for the user's request
+2. For echo tool: use when user wants something repeated or echoed back
+3. For web_search tool: use when user asks for current information, news, facts, or anything that requires up-to-date data
+4. If no tools are needed, respond with "use_tools": false and "tools": []
+5. Be conservative - only use tools when they add clear value
+
+Respond with ONLY the JSON object, no other text:"""
+
+    return prompt
+
+
+def parse_llm_tool_decision(llm_response: str, available_tools: List[Dict[str, str]]) -> List[str]:
+    """Parse the LLM's tool decision response."""
+    import json
+    import re
+    
+    try:
+        # Try to extract JSON from the response
+        # Look for JSON pattern in the response
+        json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
+        if json_match:
+            json_str = json_match.group()
+            decision = json.loads(json_str)
+            
+            # Validate the decision
+            if isinstance(decision, dict) and "use_tools" in decision and "tools" in decision:
+                if decision["use_tools"] and isinstance(decision["tools"], list):
+                    # Filter to only include available tools
+                    available_tool_names = [tool["name"] for tool in available_tools]
+                    valid_tools = [tool for tool in decision["tools"] if tool in available_tool_names]
+                    
+                    logger.info(f"Parsed tool decision: {decision}")
+                    logger.info(f"Valid tools selected: {valid_tools}")
+                    
+                    return valid_tools
+                else:
+                    logger.info("LLM decided no tools needed")
+                    return []
+        
+        # Fallback: if JSON parsing fails, try keyword-based fallback
+        logger.warning("Failed to parse LLM JSON response, using fallback logic")
+        return fallback_tool_selection(llm_response, available_tools)
+        
+    except Exception as e:
+        logger.error(f"Error parsing LLM tool decision: {str(e)}")
+        logger.error(f"LLM response was: {llm_response}")
+        return fallback_tool_selection(llm_response, available_tools)
+
+
+def fallback_tool_selection(llm_response: str, available_tools: List[Dict[str, str]]) -> List[str]:
+    """Fallback tool selection logic if LLM parsing fails."""
+    available_tool_names = [tool["name"] for tool in available_tools]
+    selected_tools = []
+    
+    # Simple keyword matching as fallback
+    response_lower = llm_response.lower()
+    
+    if "echo" in available_tool_names and any(word in response_lower for word in ["echo", "repeat"]):
+        selected_tools.append("echo")
+    
+    if "web_search" in available_tool_names and any(word in response_lower for word in ["web_search", "search", "web search"]):
+        selected_tools.append("web_search")
+    
+    logger.info(f"Fallback tool selection: {selected_tools}")
+    return selected_tools
 
 
 async def call_mcp_tools(state: Union[Dict[str, Any], ConversationState]) -> Dict[str, Any]:
@@ -301,36 +416,15 @@ async def call_mcp_tools(state: Union[Dict[str, Any], ConversationState]) -> Dic
 
 
 def prepare_tool_input(tool_name: str, user_content: str) -> Dict[str, Any]:
-    """Prepare input data for MCP tools based on tool type and user content."""
+    """Prepare input data for MCP tools based on LLM decision and user content."""
     if tool_name == "echo":
-        # For echo tool, extract the text to echo
-        # Remove trigger words and clean up
-        text_to_echo = user_content
-        for trigger in ["echo", "repeat", "say back"]:
-            if trigger in text_to_echo.lower():
-                text_to_echo = text_to_echo.lower().replace(trigger, "").strip()
-                break
-        
-        return {"message": text_to_echo, "prefix": "Echo: "}
+        # For echo tool, use the original user content
+        return {"message": user_content, "prefix": "Echo: "}
     
     elif tool_name == "web_search":
-        # For web search tool, extract the search query
-        # Remove trigger words and clean up
-        search_query = user_content
-        trigger_words = ["search", "find", "look up", "what is", "who is", "latest news", "current", "recent"]
-        
-        for trigger in trigger_words:
-            if trigger in search_query.lower():
-                # Remove the trigger word and clean up
-                search_query = search_query.lower().replace(trigger, "").strip()
-                break
-        
-        # If no trigger word found, use the entire content as query
-        if search_query == user_content:
-            search_query = user_content.strip()
-        
+        # For web search tool, use the original user content as query
         return {
-            "query": search_query,
+            "query": user_content,
             "max_results": 5,
             "search_engine": "duckduckgo"
         }
@@ -448,6 +542,75 @@ async def call_llm_agent(state: Union[Dict[str, Any], ConversationState]) -> Dic
         error_message = Message(
             role="assistant",
             content=f"I apologize, but I encountered an error while processing your request: {str(e)}",
+            timestamp=datetime.utcnow()
+        )
+        conv_state.messages.append(error_message)
+    
+    return {
+        "messages": serialize_messages(conv_state.messages),
+        "metadata": serialize_metadata(conv_state.metadata),
+        "session_id": conv_state.session_id,
+        "mcp_tools_needed": conv_state.mcp_tools_needed,
+        "mcp_tool_calls": serialize_mcp_tool_calls(conv_state.mcp_tool_calls),
+        "mcp_tools_available": conv_state.mcp_tools_available
+    }
+
+
+async def generate_direct_response(state: Union[Dict[str, Any], ConversationState]) -> Dict[str, Any]:
+    """Generate a direct response from the LLM when no tools are needed."""
+    logger.info("Generating direct response from LLM")
+    
+    conv_state = ensure_conversation_state(state)
+    
+    try:
+        from app.services.llm_client import LLMClient
+        llm_client = LLMClient()
+        
+        # Create a simple prompt for the LLM to generate a response
+        prompt = f"""You are an AI assistant. You are currently in a conversation with a user.
+
+The user's last message was: "{conv_state.messages[-1].content}"
+
+Please generate a response to the user's message.
+
+Your response:"""
+        
+        # Create request for LLM agent
+        llm_request = ChatRequest(
+            messages=[Message(role=MessageRole.USER, content=prompt, timestamp=datetime.utcnow())],
+            stream=False,
+            temperature=0.7,  # Default temperature for direct response
+            max_tokens=500,
+            model=conv_state.metadata.get("model", "gpt-3.5-turbo")
+        )
+        
+        # Call LLM agent
+        llm_response = await llm_client.generate_text(llm_request)
+        
+        # Create assistant message from response
+        assistant_message = Message(
+            role="assistant",
+            content=llm_response["response"],  # Access as dictionary
+            timestamp=datetime.utcnow()
+        )
+        
+        # Add assistant message to conversation
+        conv_state.messages.append(assistant_message)
+        
+        # Add LLM response metadata
+        conv_state.metadata["llm_response_received"] = True
+        conv_state.metadata["llm_model"] = llm_response.get("model")
+        conv_state.metadata["llm_usage"] = llm_response.get("usage")
+        conv_state.metadata["llm_finish_reason"] = llm_response.get("finish_reason")
+        
+        logger.info("Direct response generated successfully")
+        
+    except Exception as e:
+        logger.error(f"Failed to generate direct response from LLM: {str(e)}")
+        # Create error message
+        error_message = Message(
+            role="assistant",
+            content=f"I apologize, but I encountered an error while generating a response: {str(e)}",
             timestamp=datetime.utcnow()
         )
         conv_state.messages.append(error_message)

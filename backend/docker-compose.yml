@@ -1,4 +1,25 @@
 services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=stubichat
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - stubichat_network
+    restart: unless-stopped
+    container_name: stubichat-postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d stubichat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # Frontend Service (Next.js)
   frontend:
     build:
@@ -9,11 +30,18 @@ services:
     environment:
       - NODE_ENV=production
       - NEXT_PUBLIC_BACKEND_API_URL=http://localhost:8000
+      - NEXTAUTH_SECRET=your-secret-key-change-in-production
+      - NEXTAUTH_URL=http://localhost:3000
+      - NEXTAUTH_TRUSTED_HOSTS=localhost,127.0.0.1,0.0.0.0
+      - POSTGRES_URL=postgresql://postgres:password@postgres:5432/stubichat
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/stubichat
     networks:
       - stubichat_network
     restart: unless-stopped
     container_name: stubichat-frontend
     depends_on:
+      postgres:
+        condition: service_healthy
       main-backend:
         condition: service_healthy
 
@@ -113,4 +141,7 @@ services:
     container_name: stubichat-nginx
 networks:
   stubichat_network:
-    driver: bridge 
+    driver: bridge
+
+volumes:
+  postgres_data: 

@@ -37,6 +37,7 @@ export const {
   signOut,
 } = NextAuth({
   ...authConfig,
+  trustHost: true, // Add trusted host configuration
   providers: [
     Credentials({
       credentials: {},

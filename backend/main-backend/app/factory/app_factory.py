@@ -10,6 +10,7 @@ from app.core.config import Settings
 from app.utils.logger import get_logger, log_request_info
 from app.api.chat import router as chat_router
 from app.api.mcp_tools import router as mcp_tools_router
+from app.api.auth import router as auth_router
 
 
 class AppFactory:
@@ -40,9 +41,26 @@ class AppFactory:
             except Exception as e:
                 self.logger.warning(f"LLM Agent health check failed: {str(e)}")
             
+            try:
+                # Initialize database
+                from app.core.database import init_db
+                await init_db()
+                self.logger.info("Database initialized successfully")
+            except Exception as e:
+                self.logger.error(f"Database initialization failed: {str(e)}")
+                raise
+            
             yield
             
             # Shutdown
+            try:
+                # Close database connections
+                from app.core.database import close_db
+                await close_db()
+                self.logger.info("Database connections closed")
+            except Exception as e:
+                self.logger.error(f"Database shutdown failed: {str(e)}")
+            
             self.logger.info("=== Stubichat Main Backend Shutting Down ===")
         
         return lifespan
@@ -97,6 +115,7 @@ class AppFactory:
         # Include routers
         app.include_router(chat_router)
         app.include_router(mcp_tools_router)
+        app.include_router(auth_router)
         
         # Root endpoint
         @app.get("/")

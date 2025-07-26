@@ -27,13 +27,26 @@ class Settings(BaseSettings):
     openai_api_key: Optional[str] = None
     openai_base_url: Optional[str] = None
     
-    # Database settings (optional)
-    database_url: Optional[str] = None
+    # Database settings
+    database_url: str = "postgresql+asyncpg://postgres:password@postgres:5432/stubichat"
+    database_echo: bool = False
     
-    # Security settings
+    # Security and Authentication settings
     secret_key: str = "your-secret-key-change-in-production"
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
+    refresh_token_expire_days: int = 7
+    
+    # Password settings
+    password_min_length: int = 8
+    password_max_length: int = 128
+    
+    # Rate limiting settings
+    rate_limit_requests: int = 100
+    rate_limit_window: int = 60  # seconds
+    
+    # Timezone settings
+    timezone: str = "Asia/Seoul"
     
     # Logging settings
     log_level: str = "INFO"

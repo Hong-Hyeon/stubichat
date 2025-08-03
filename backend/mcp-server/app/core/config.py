@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     mcp_server_version: str = "1.0.0"
     mcp_server_description: str = "MCP server for Stubichat with echo tool"
     
+    # Embedding server settings
+    embedding_server_url: str = "http://embedding-server:8003"
+    
     # Logging
     log_level: str = "INFO"
     

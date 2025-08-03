@@ -87,9 +87,10 @@ class AppFactory:
         """Add routes to the FastAPI application."""
         
         # Import and include routers
-        from app.tools import echo_router, web_search_router
+        from app.tools import echo_router, web_search_router, rag_router
         app.include_router(echo_router)
         app.include_router(web_search_router)
+        app.include_router(rag_router)
         
         # Root endpoint
         @app.get("/")

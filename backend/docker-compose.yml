@@ -1,5 +1,5 @@
 services:
-  # PostgreSQL Database
+  # PostgreSQL Database (Main)
   postgres:
     image: postgres:15-alpine
     environment:
@@ -16,6 +16,44 @@ services:
     container_name: stubichat-postgres
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d stubichat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL Database (Embedding)
+  embedding_postgres:
+    image: pgvector/pgvector:pg15
+    environment:
+      - POSTGRES_DB=embeddings
+      - POSTGRES_USER=embedding_user
+      - POSTGRES_PASSWORD=embedding_password
+    ports:
+      - "5434:5432"
+    volumes:
+      - embedding_postgres_data:/var/lib/postgresql/data
+    networks:
+      - stubichat_network
+    restart: unless-stopped
+    container_name: stubichat-embedding-postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U embedding_user -d embeddings"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis (for Celery and caching)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - stubichat_network
+    restart: unless-stopped
+    container_name: stubichat-redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -122,6 +160,39 @@ services:
       retries: 3
       start_period: 40s
     container_name: stubichat-mcp-server
+
+  # Embedding Server Service
+  embedding-server:
+    build:
+      context: ./embedding-server
+      dockerfile: Dockerfile
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./embedding-server/app:/app/app
+      - ./logs:/app/logs
+    environment:
+      - PYTHONPATH=/app
+      - EMBEDDING_DATABASE_URL=postgresql://embedding_user:embedding_password@embedding_postgres:5432/embeddings
+      - REDIS_URL=redis://redis:6379/1
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+      - DEBUG=true
+    networks:
+      - stubichat_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    container_name: stubichat-embedding-server
+    depends_on:
+      embedding_postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
   # Nginx Reverse Proxy (optional)
   nginx:
     image: nginx:alpine
@@ -144,4 +215,6 @@ networks:
     driver: bridge
 
 volumes:
-  postgres_data: 
+  postgres_data:
+  embedding_postgres_data:
+  redis_data: 

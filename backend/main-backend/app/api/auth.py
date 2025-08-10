@@ -43,10 +43,7 @@ def get_current_user_id(credentials: HTTPAuthorizationCredentials = Depends(secu
         )
 
 
-@router.exception_handler(RateLimitExceeded)
-async def ratelimit_handler(request, exc):
-    """Handle rate limit exceeded exceptions."""
-    return _rate_limit_exceeded_handler(request, exc)
+# Rate limit exception handler - removed from router as APIRouter doesn't support exception_handler
 
 
 @router.post("/register", response_model=AuthResponse)

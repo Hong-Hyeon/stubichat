@@ -6,7 +6,8 @@ from datetime import datetime
 
 from app.models.embedding_models import (
     EmbeddingRequest, EmbeddingResponse,
-    SearchRequest, SearchResponse, SearchResult
+    SearchRequest, SearchResponse, SearchResult,
+    GeoSearchRequest
 )
 from app.services.gpt_embedding_service import GPTEmbeddingService
 from app.services.vector_store_service import VectorStoreService
@@ -71,6 +72,7 @@ async def create_embedding(
         logger.info(f"Embedding created successfully in {processing_time:.3f}s")
         
         return EmbeddingResponse(
+            document_id=document_id,
             embedding=embedding,
             model=embedding_svc.model,
             text=request.text,
@@ -99,7 +101,8 @@ async def search_embeddings(
         search_results = await vector_svc.search_similar(
             query_embedding=query_embedding,
             top_k=request.top_k,
-            similarity_threshold=request.similarity_threshold
+            similarity_threshold=request.similarity_threshold,
+            filters=request.filters
         )
         
         # Convert to response format
@@ -127,6 +130,43 @@ async def search_embeddings(
         logger.error(f"Error searching embeddings: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to search embeddings: {str(e)}")
 
+
+@router.post("/search_geo")
+async def search_embeddings_geo(
+    request: GeoSearchRequest,
+    embedding_svc: GPTEmbeddingService = Depends(get_embedding_service),
+    vector_svc: VectorStoreService = Depends(get_vector_store_service)
+):
+    """Search for similar embeddings within a radius using PostGIS geography."""
+    try:
+        start_time = time.time()
+
+        query_embedding = await embedding_svc.create_embedding(request.query)
+
+        search_results = await vector_svc.search_similar_within_radius(
+            query_embedding=query_embedding,
+            center_lat=request.lat,
+            center_lon=request.lon,
+            radius_m=request.radius_m,
+            top_k=request.top_k,
+            similarity_threshold=request.similarity_threshold,
+            filters=request.filters,
+            order_by=request.order_by,
+            alpha=request.alpha
+        )
+
+        # Do not enforce response_model to allow distance field passthrough
+        search_time = time.time() - start_time
+        return {
+            "query": request.query,
+            "results": search_results,
+            "total_results": len(search_results),
+            "search_time": search_time
+        }
+
+    except Exception as e:
+        logger.error(f"Error searching embeddings with geo: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to search embeddings with geo: {str(e)}")
 
 @router.get("/statistics")
 async def get_statistics(

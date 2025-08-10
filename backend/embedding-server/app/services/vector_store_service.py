@@ -32,6 +32,8 @@ class VectorStoreService:
             async with pool.acquire() as conn:
                 # Enable pgvector extension
                 await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                # Enable PostGIS
+                await conn.execute("CREATE EXTENSION IF NOT EXISTS postgis")
 
                 # Create embeddings table with optimized structure
                 await conn.execute("""
@@ -41,6 +43,7 @@ class VectorStoreService:
                         content TEXT NOT NULL,
                         embedding vector(1536),
                         metadata JSONB,
+                        geom GEOGRAPHY(Point, 4326),
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                     )
@@ -73,6 +76,12 @@ class VectorStoreService:
                 await conn.execute("""
                     CREATE INDEX IF NOT EXISTS embeddings_metadata_gin_idx
                     ON embeddings USING GIN (metadata)
+                """)
+
+                # 6. GiST index on geography for spatial queries
+                await conn.execute("""
+                    CREATE INDEX IF NOT EXISTS embeddings_geom_gist_idx
+                    ON embeddings USING GIST (geom)
                 """)
 
                 # 5. B-tree index on created_at for time-based queries
@@ -117,22 +126,55 @@ class VectorStoreService:
         try:
             pool = await self._get_pool()
             async with pool.acquire() as conn:
+                # 중복 체크 (content 기준)
+                existing = await conn.fetchval("""
+                    SELECT document_id FROM embeddings WHERE content = $1
+                """, content)
+                
+                if existing:
+                    self.logger.warning(f"중복된 content 발견, 건너뜀: {content[:50]}...")
+                    return False
+                
                 # Convert metadata to JSON string if not None
                 metadata_json = json.dumps(metadata) if metadata is not None else None
                 
                 # Convert embedding list to string for pgvector
                 embedding_str = f"[{','.join(map(str, embedding))}]"
                 
-                await conn.execute("""
-                    INSERT INTO embeddings (document_id, content, embedding, metadata)
-                    VALUES ($1, $2, $3::vector, $4::jsonb)
-                    ON CONFLICT (document_id)
-                    DO UPDATE SET
-                        content = $2,
-                        embedding = $3::vector,
-                        metadata = $4::jsonb,
-                        updated_at = NOW()
-                """, document_id, content, embedding_str, metadata_json)
+                # Compute geom from metadata lat/lon if present
+                lat = None
+                lon = None
+                try:
+                    if metadata and 'lat' in metadata and 'lon' in metadata:
+                        lat = float(metadata['lat'])
+                        lon = float(metadata['lon'])
+                except Exception:
+                    lat = None
+                    lon = None
+
+                if lat is not None and lon is not None:
+                    await conn.execute("""
+                        INSERT INTO embeddings (document_id, content, embedding, metadata, geom)
+                        VALUES ($1, $2, $3::vector, $4::jsonb, ST_SetSRID(ST_MakePoint($5, $6), 4326)::geography)
+                        ON CONFLICT (document_id)
+                        DO UPDATE SET
+                            content = $2,
+                            embedding = $3::vector,
+                            metadata = $4::jsonb,
+                            geom = ST_SetSRID(ST_MakePoint($5, $6), 4326)::geography,
+                            updated_at = NOW()
+                    """, document_id, content, embedding_str, metadata_json, lon, lat)
+                else:
+                    await conn.execute("""
+                        INSERT INTO embeddings (document_id, content, embedding, metadata)
+                        VALUES ($1, $2, $3::vector, $4::jsonb)
+                        ON CONFLICT (document_id)
+                        DO UPDATE SET
+                            content = $2,
+                            embedding = $3::vector,
+                            metadata = $4::jsonb,
+                            updated_at = NOW()
+                    """, document_id, content, embedding_str, metadata_json)
 
                 self.logger.info(f"Embedding stored for document: {document_id}")
                 return True
@@ -162,9 +204,25 @@ class VectorStoreService:
 
                 if filters:
                     for key, value in filters.items():
-                        param_count += 1
-                        filter_conditions.append(f"metadata->>'{key}' = ${param_count}")
-                        filter_params.append(value)
+                        # Support numeric range filters for capacity via suffixes
+                        if key.endswith('_min'):
+                            base = key[:-4]
+                            param_count += 1
+                            filter_conditions.append(
+                                f"(metadata->>'{base}')::double precision >= ${param_count}"
+                            )
+                            filter_params.append(float(value))
+                        elif key.endswith('_max'):
+                            base = key[:-4]
+                            param_count += 1
+                            filter_conditions.append(
+                                f"(metadata->>'{base}')::double precision <= ${param_count}"
+                            )
+                            filter_params.append(float(value))
+                        else:
+                            param_count += 1
+                            filter_conditions.append(f"metadata->>'{key}' = ${param_count}")
+                            filter_params.append(value)
 
                 filter_sql = " AND " + " AND ".join(filter_conditions) if filter_conditions else ""
 
@@ -215,6 +273,8 @@ class VectorStoreService:
         try:
             pool = await self._get_pool()
             async with pool.acquire() as conn:
+                stored_count = 0
+                skipped_count = 0
                 # Use transaction for batch operations
                 async with conn.transaction():
                     for data in embeddings_data:
@@ -222,26 +282,189 @@ class VectorStoreService:
                         content = data["content"]
                         embedding = data["embedding"]
                         metadata = data.get("metadata")
-                        
+
+                        existing = await conn.fetchval("""
+                            SELECT document_id FROM embeddings WHERE content = $1
+                        """, content)
+                        if existing:
+                            self.logger.warning(f"중복된 content 발견, 건너뜀: {content[:50]}...")
+                            skipped_count += 1
+                            continue
+
                         metadata_json = json.dumps(metadata) if metadata is not None else None
                         embedding_str = f"[{','.join(map(str, embedding))}]"
-                        
-                        await conn.execute("""
-                            INSERT INTO embeddings (document_id, content, embedding, metadata)
-                            VALUES ($1, $2, $3::vector, $4::jsonb)
-                            ON CONFLICT (document_id)
-                            DO UPDATE SET
-                                content = $2,
-                                embedding = $3::vector,
-                                metadata = $4::jsonb,
-                                updated_at = NOW()
-                        """, document_id, content, embedding_str, metadata_json)
 
-                self.logger.info(f"Batch stored {len(embeddings_data)} embeddings")
-                return {"success": True, "count": len(embeddings_data)}
+                        lat = None
+                        lon = None
+                        try:
+                            if metadata and 'lat' in metadata and 'lon' in metadata:
+                                lat = float(metadata['lat'])
+                                lon = float(metadata['lon'])
+                        except Exception:
+                            lat = None
+                            lon = None
+
+                        if lat is not None and lon is not None:
+                            await conn.execute("""
+                                INSERT INTO embeddings (document_id, content, embedding, metadata, geom)
+                                VALUES ($1, $2, $3::vector, $4::jsonb, ST_SetSRID(ST_MakePoint($5, $6), 4326)::geography)
+                                ON CONFLICT (document_id)
+                                DO UPDATE SET
+                                    content = $2,
+                                    embedding = $3::vector,
+                                    metadata = $4::jsonb,
+                                    geom = ST_SetSRID(ST_MakePoint($5, $6), 4326)::geography,
+                                    updated_at = NOW()
+                            """, document_id, content, embedding_str, metadata_json, lon, lat)
+                        else:
+                            await conn.execute("""
+                                INSERT INTO embeddings (document_id, content, embedding, metadata)
+                                VALUES ($1, $2, $3::vector, $4::jsonb)
+                                ON CONFLICT (document_id)
+                                DO UPDATE SET
+                                    content = $2,
+                                    embedding = $3::vector,
+                                    metadata = $4::jsonb,
+                                    updated_at = NOW()
+                            """, document_id, content, embedding_str, metadata_json)
+
+                self.logger.info(f"Batch stored {stored_count} embeddings, skipped {skipped_count} duplicates")
+                return {
+                    "success": True,
+                    "stored_count": stored_count,
+                    "skipped_count": skipped_count,
+                    "total_processed": len(embeddings_data)
+                }
 
         except Exception as e:
             self.logger.error(f"Error in batch store: {str(e)}")
+            raise
+
+    async def search_similar_within_radius(
+        self,
+        query_embedding: List[float],
+        center_lat: float,
+        center_lon: float,
+        radius_m: int = 1000,
+        top_k: int = 10,
+        similarity_threshold: float = 0.7,
+        filters: Optional[Dict[str, Any]] = None,
+        order_by: str = 'hybrid',
+        alpha: float = 0.7
+    ) -> List[Dict[str, Any]]:
+        """Search similar embeddings constrained within a radius using PostGIS geography and HNSW for vectors."""
+        try:
+            pool = await self._get_pool()
+            async with pool.acquire() as conn:
+                query_embedding_str = f"[{','.join(map(str, query_embedding))}]"
+
+                filter_conditions = [
+                    "geom IS NOT NULL",
+                    "ST_DWithin(geom, ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography, $4)"
+                ]
+                filter_params: List[Any] = []
+                # Base placeholders used in SQL before metadata filters:
+                # $1 embedding, $2 lon, $3 lat, $4 radius, $5 similarity_threshold, $6 top_k
+                # If hybrid: $7 alpha is used in SELECT; metadata filters must start AFTER these
+                base_count = 7 if order_by == 'hybrid' else 6
+                param_count = base_count
+
+                if filters:
+                    for key, value in filters.items():
+                        param_count += 1
+                        placeholder = f"${param_count}"
+                        # Support numeric range via *_min/*_max and numeric equality when value is number
+                        if key.endswith('_min'):
+                            base = key[:-4]
+                            filter_conditions.append(f"(metadata->>'{base}')::double precision >= {placeholder}")
+                            filter_params.append(float(value))
+                        elif key.endswith('_max'):
+                            base = key[:-4]
+                            filter_conditions.append(f"(metadata->>'{base}')::double precision <= {placeholder}")
+                            filter_params.append(float(value))
+                        else:
+                            if isinstance(value, (int, float)):
+                                filter_conditions.append(f"(metadata->>'{key}')::double precision = {placeholder}")
+                                filter_params.append(float(value))
+                            else:
+                                filter_conditions.append(f"metadata->>'{key}' = {placeholder}")
+                                filter_params.append(str(value))
+
+                filter_sql = " AND " + " AND ".join(filter_conditions) if filter_conditions else ""
+
+                # Compute hybrid score when requested
+                # Normalize distance by radius for bounded [0,1], inverted so closer is higher
+                if order_by == 'hybrid':
+                    order_sql = "ORDER BY hybrid_score DESC"
+                    select_extra = ", ( ($7 * (1 - (embedding <=> $1::vector))) + ((1 - $7) * (1 - LEAST(ST_Distance(geom, ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography) / NULLIF($4,0), 1))) ) AS hybrid_score"
+                elif order_by == 'distance':
+                    order_sql = "ORDER BY distance_m ASC"
+                    select_extra = ""
+                else:
+                    order_sql = "ORDER BY embedding <=> $1::vector"
+                    select_extra = ""
+
+                sql = f"""
+                    SELECT document_id, content, metadata,
+                           1 - (embedding <=> $1::vector) AS similarity_score,
+                           ST_Distance(geom, ST_SetSRID(ST_MakePoint($2, $3), 4326)::geography) AS distance_m
+                           {select_extra}
+                    FROM embeddings
+                    WHERE 1 - (embedding <=> $1::vector) > $5{filter_sql}
+                    {order_sql}
+                    LIMIT $6
+                """
+
+                if order_by == 'hybrid':
+                    rows = await conn.fetch(
+                        sql,
+                        query_embedding_str,
+                        center_lon,
+                        center_lat,
+                        radius_m,
+                        similarity_threshold,
+                        top_k,
+                        alpha,
+                        *filter_params
+                    )
+                else:
+                    rows = await conn.fetch(
+                        sql,
+                        query_embedding_str,
+                        center_lon,
+                        center_lat,
+                        radius_m,
+                        similarity_threshold,
+                        top_k,
+                        *filter_params
+                    )
+
+                results: List[Dict[str, Any]] = []
+                for row in rows:
+                    metadata = row["metadata"]
+                    if isinstance(metadata, str):
+                        try:
+                            metadata = json.loads(metadata)
+                        except Exception:
+                            metadata = None
+                    item = {
+                        "document_id": row["document_id"],
+                        "content": row["content"],
+                        "metadata": metadata,
+                        "similarity_score": float(row["similarity_score"]),
+                        "distance_m": float(row["distance_m"]) if row["distance_m"] is not None else None
+                    }
+                    if order_by == 'hybrid' and 'hybrid_score' in row:
+                        try:
+                            item["hybrid_score"] = float(row["hybrid_score"])  # type: ignore
+                        except Exception:
+                            pass
+                    results.append(item)
+
+                return results
+
+        except Exception as e:
+            self.logger.error(f"Error in geo search: {str(e)}")
             raise
 
     async def get_statistics(self) -> Dict[str, Any]:

@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
+from typing import Literal
 from datetime import datetime
 
 
@@ -11,6 +12,7 @@ class EmbeddingRequest(BaseModel):
 
 class EmbeddingResponse(BaseModel):
     """Response model for embedding creation."""
+    document_id: str = Field(..., description="Stored document ID")
     embedding: List[float] = Field(..., description="Generated embedding vector")
     model: str = Field(..., description="Model used for embedding")
     text: str = Field(..., description="Original text")
@@ -51,6 +53,19 @@ class SearchRequest(BaseModel):
     top_k: int = Field(default=10, description="Number of results to return")
     filters: Optional[Dict[str, Any]] = Field(default=None, description="Search filters")
     similarity_threshold: float = Field(default=0.7, description="Similarity threshold")
+
+
+class GeoSearchRequest(BaseModel):
+    """Request model for geospatial vector search within radius."""
+    query: str = Field(..., description="Search query")
+    lat: float = Field(..., description="Center latitude")
+    lon: float = Field(..., description="Center longitude")
+    radius_m: int = Field(default=1000, description="Search radius in meters")
+    top_k: int = Field(default=10, description="Number of results to return")
+    similarity_threshold: float = Field(default=0.7, description="Similarity threshold")
+    filters: Optional[Dict[str, Any]] = Field(default=None, description="Additional metadata filters")
+    order_by: Literal['similarity', 'distance', 'hybrid'] = Field(default='hybrid', description="Ranking criterion")
+    alpha: float = Field(default=0.7, ge=0.0, le=1.0, description="Hybrid weight: similarity(alpha) vs distance(1-alpha)")
 
 
 class SearchResult(BaseModel):
@@ -124,4 +139,4 @@ class TableSwitchResponse(BaseModel):
     success: bool = Field(..., description="Whether the table switch was successful")
     previous_table: Optional[str] = Field(default=None, description="Previously active table")
     current_table: str = Field(..., description="Currently active table")
-    switched_at: datetime = Field(default_factory=datetime.utcnow) 
+    switched_at: datetime = Field(default_factory=datetime.utcnow)

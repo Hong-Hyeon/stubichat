@@ -1,4 +1,4 @@
-import openai
+from openai import OpenAI
 from typing import List
 from app.core.config import settings
 from app.utils.logger import get_logger
@@ -13,25 +13,27 @@ class GPTEmbeddingService:
         
         # Configure OpenAI client
         if settings.openai_api_key:
-            openai.api_key = settings.openai_api_key
-            if settings.openai_base_url:
-                openai.base_url = settings.openai_base_url
+            self.client = OpenAI(
+                api_key=settings.openai_api_key,
+                base_url=settings.openai_base_url if settings.openai_base_url else None
+            )
         else:
             self.logger.warning("OpenAI API key not provided")
+            self.client = None
 
     async def create_embedding(self, text: str) -> List[float]:
         """Create an embedding for the given text."""
         try:
-            if not settings.openai_api_key:
+            if not self.client:
                 raise ValueError("OpenAI API key not configured")
 
             # Create embedding using OpenAI API
-            response = openai.Embedding.create(
+            response = self.client.embeddings.create(
                 model=self.model,
                 input=text
             )
             
-            embedding = response['data'][0]['embedding']
+            embedding = response.data[0].embedding
             self.logger.info(f"Created embedding for text (length: {len(text)})")
             
             return embedding
@@ -43,16 +45,16 @@ class GPTEmbeddingService:
     async def create_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
         """Create embeddings for multiple texts in batch."""
         try:
-            if not settings.openai_api_key:
+            if not self.client:
                 raise ValueError("OpenAI API key not configured")
 
             # Create embeddings using OpenAI API
-            response = openai.Embedding.create(
+            response = self.client.embeddings.create(
                 model=self.model,
                 input=texts
             )
             
-            embeddings = [data['embedding'] for data in response['data']]
+            embeddings = [data.embedding for data in response.data]
             self.logger.info(f"Created {len(embeddings)} embeddings in batch")
             
             return embeddings
@@ -66,5 +68,5 @@ class GPTEmbeddingService:
         return {
             "model": self.model,
             "provider": "OpenAI",
-            "api_key_configured": bool(settings.openai_api_key)
+            "api_key_configured": bool(self.client is not None)
         } 

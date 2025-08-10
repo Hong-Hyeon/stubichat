@@ -7,7 +7,7 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=password
     ports:
-      - "5433:5432"
+      - "15432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -22,13 +22,14 @@ services:
 
   # PostgreSQL Database (Embedding)
   embedding_postgres:
-    image: pgvector/pgvector:pg15
+    build:
+      context: ./system-docker/embedding-postgres
     environment:
       - POSTGRES_DB=embeddings
       - POSTGRES_USER=embedding_user
       - POSTGRES_PASSWORD=embedding_password
     ports:
-      - "5434:5432"
+      - "25432:5432"
     volumes:
       - embedding_postgres_data:/var/lib/postgresql/data
     networks:
@@ -45,7 +46,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis_data:/data
     networks:
@@ -170,6 +171,7 @@ services:
       - "8003:8003"
     volumes:
       - ./embedding-server/app:/app/app
+      - ./data:/app/data
       - ./logs:/app/logs
     environment:
       - PYTHONPATH=/app
